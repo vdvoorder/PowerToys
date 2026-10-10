@@ -361,6 +361,10 @@ bool AppZoneHistory::SetAppLastZones(HWND window, const FancyZonesDataTypes::Wor
                                                   .workAreaId = workAreaId,
                                                   .zoneIndexSet = zoneIndexSet };
 
+    // The monitor handle isn't stored, the same as in the history loaded from the file:
+    // after a display change the same handle can belong to another monitor.
+    data.workAreaId.monitorId.monitor = nullptr;
+
     if (m_history.contains(processPath))
     {
         // application already has history but on other desktop, add with new desktop info
