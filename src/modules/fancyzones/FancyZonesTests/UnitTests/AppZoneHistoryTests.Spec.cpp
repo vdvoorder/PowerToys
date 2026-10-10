@@ -2,9 +2,12 @@
 #include <filesystem>
 
 #include <FancyZonesLib/FancyZonesData/AppZoneHistory.h>
+#include <FancyZonesLib/Settings.h>
 
 #include "util.h"
 #include <modules/fancyzones/FancyZonesLib/util.h>
+
+#include <common/utils/process_path.h>
 
 using namespace Microsoft::VisualStudio::CppUnitTestFramework;
 
@@ -337,6 +340,114 @@ namespace FancyZonesUnitTests
             };
 
             Assert::IsFalse(AppZoneHistory::instance().RemoveAppLastZone(nullptr, workAreaId, layoutId));
+        }
+    };
+
+    TEST_CLASS (AppZoneHistoryMonitorHandleUnitTests)
+    {
+        HINSTANCE m_hInst{};
+        const GUID m_layoutId = FancyZonesUtils::GuidFromString(L"{4AE85FCF-83AE-42A9-8043-7759828D8FE4}").value();
+        const FancyZonesDataTypes::WorkAreaId m_workAreaId = {
+            .monitorId = {
+                .monitor = Mocks::Monitor(),
+                .deviceId = {
+                    .id = L"monitor-handle-device-id-1",
+                    .instanceId = L"5&10a58c63&0&UID16777494",
+                    .number = 1,
+                },
+                .serialNumber = L"monitor-handle-serial-number-1" },
+            .virtualDesktopId = FancyZonesUtils::GuidFromString(L"{7C3CD359-1448-49EC-A685-F22EDC44B426}").value()
+        };
+        std::vector<HWND> m_windows{};
+
+        HWND CreateTestWindow()
+        {
+            const auto window = Mocks::WindowCreate(m_hInst);
+            m_windows.push_back(window);
+            return window;
+        }
+
+        void CloseTestWindows()
+        {
+            for (const auto window : m_windows)
+            {
+                // a window can be destroyed only by its thread, which does it while handling WM_CLOSE
+                SendMessageTimeout(window, WM_CLOSE, 0, 0, SMTO_ABORTIFHUNG, 1000, nullptr);
+            }
+
+            m_windows.clear();
+        }
+
+        size_t HistorySize(HWND window)
+        {
+            const auto& history = AppZoneHistory::instance().GetFullAppZoneHistory();
+            const auto iter = history.find(get_process_path(window));
+            return iter == history.end() ? 0 : iter->second.size();
+        }
+
+        TEST_METHOD_INITIALIZE(Init)
+        {
+            m_hInst = static_cast<HINSTANCE>(GetModuleHandleW(nullptr));
+
+            FancyZonesSettings::instance().SetSettings(Settings{});
+            std::filesystem::remove(AppZoneHistory::AppZoneHistoryFileName());
+            AppZoneHistory::instance().LoadData();
+        }
+
+        TEST_METHOD_CLEANUP(CleanUp)
+        {
+            CloseTestWindows();
+
+            FancyZonesSettings::instance().SetSettings(Settings{});
+            std::filesystem::remove(AppZoneHistory::AppZoneHistoryFileName());
+            AppZoneHistory::instance().LoadData();
+        }
+
+        TEST_METHOD (SameHandleDifferentDevice)
+        {
+            // the handle belongs to another monitor now, as after replacing the only connected monitor
+            auto otherMonitorWorkAreaId = m_workAreaId;
+            otherMonitorWorkAreaId.monitorId.deviceId = { .id = L"monitor-handle-device-id-2", .instanceId = L"5&10a58c63&0&UID16777495", .number = 1 };
+            otherMonitorWorkAreaId.monitorId.serialNumber = L"monitor-handle-serial-number-2";
+            const auto window = CreateTestWindow();
+
+            Assert::IsTrue(AppZoneHistory::instance().SetAppLastZones(window, m_workAreaId, m_layoutId, { 1 }));
+            Assert::IsTrue(AppZoneHistory::instance().SetAppLastZones(window, otherMonitorWorkAreaId, m_layoutId, { 2 }));
+
+            Assert::AreEqual((size_t)2, HistorySize(window));
+            Assert::IsTrue(std::vector<ZoneIndex>{ 1 } == AppZoneHistory::instance().GetAppLastZoneIndexSet(window, m_workAreaId, m_layoutId));
+            Assert::IsTrue(std::vector<ZoneIndex>{ 2 } == AppZoneHistory::instance().GetAppLastZoneIndexSet(window, otherMonitorWorkAreaId, m_layoutId));
+        }
+
+        TEST_METHOD (SameDeviceDifferentHandle)
+        {
+            // the monitor has another handle now, as after connecting it again
+            auto otherHandleWorkAreaId = m_workAreaId;
+            otherHandleWorkAreaId.monitorId.monitor = Mocks::Monitor();
+            const auto window = CreateTestWindow();
+
+            Assert::IsTrue(AppZoneHistory::instance().SetAppLastZones(window, m_workAreaId, m_layoutId, { 1 }));
+            Assert::IsTrue(std::vector<ZoneIndex>{ 1 } == AppZoneHistory::instance().GetAppLastZoneIndexSet(window, otherHandleWorkAreaId, m_layoutId));
+
+            Assert::IsTrue(AppZoneHistory::instance().SetAppLastZones(window, otherHandleWorkAreaId, m_layoutId, { 2 }));
+
+            Assert::AreEqual((size_t)1, HistorySize(window));
+            Assert::IsTrue(std::vector<ZoneIndex>{ 2 } == AppZoneHistory::instance().GetAppLastZoneIndexSet(window, m_workAreaId, m_layoutId));
+        }
+
+        TEST_METHOD (StoredEntryHasNoHandle)
+        {
+            const auto window = CreateTestWindow();
+
+            Assert::IsTrue(AppZoneHistory::instance().SetAppLastZones(window, m_workAreaId, m_layoutId, { 1 }));
+
+            const auto history = AppZoneHistory::instance().GetZoneHistory(get_process_path(window), m_workAreaId);
+            Assert::IsTrue(history.has_value());
+            Assert::IsNull(history->workAreaId.monitorId.monitor);
+            Assert::AreEqual(m_workAreaId.monitorId.deviceId.id, history->workAreaId.monitorId.deviceId.id);
+            Assert::AreEqual(m_workAreaId.monitorId.deviceId.instanceId, history->workAreaId.monitorId.deviceId.instanceId);
+            Assert::AreEqual(m_workAreaId.monitorId.deviceId.number, history->workAreaId.monitorId.deviceId.number);
+            Assert::AreEqual(m_workAreaId.monitorId.serialNumber, history->workAreaId.monitorId.serialNumber);
         }
     };
 
