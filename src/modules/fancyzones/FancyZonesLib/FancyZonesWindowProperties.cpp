@@ -133,6 +133,12 @@ bool FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(HWND wind
     return value && value != MonitorPropertyValue(monitorId);
 }
 
+bool FancyZonesWindowProperties::IsZoneIndexPropertyFromMonitor(HWND window, const FancyZonesDataTypes::MonitorId& monitorId)
+{
+    const HANDLE value = ::GetProp(window, ZonedWindowProperties::PropertyZoneIndexMonitorID);
+    return value && value == MonitorPropertyValue(monitorId);
+}
+
 void FancyZonesWindowProperties::StampMovedOnOpeningProperty(HWND window)
 {
     ::SetPropW(window, ZonedWindowProperties::PropertyMovedOnOpening, reinterpret_cast<HANDLE>(1));

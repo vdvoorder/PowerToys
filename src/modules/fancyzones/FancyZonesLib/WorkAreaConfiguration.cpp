@@ -2,6 +2,7 @@
 #include "WorkAreaConfiguration.h"
 
 #include <FancyZonesLib/FancyZonesData/AppZoneHistory.h>
+#include <FancyZonesLib/FancyZonesWindowProperties.h>
 #include <FancyZonesLib/WindowUtils.h>
 #include <FancyZonesLib/WorkArea.h>
 
@@ -118,8 +119,11 @@ void WorkAreaConfiguration::AssignStampedWindows(const std::vector<StampedWindow
             continue;
         }
 
+        // zone numbers that were assigned on another monitor aren't compared with the app zone history of this one
         const auto workAreaForMonitor = GetWorkArea(stampedWindow.monitor);
-        if (workAreaForMonitor && AppZoneHistory::instance().GetAppLastZoneIndexSet(stampedWindow.window, workAreaForMonitor->UniqueId(), workAreaForMonitor->GetLayoutId()) == stampedWindow.zones)
+        if (workAreaForMonitor &&
+            !FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(stampedWindow.window, workAreaForMonitor->UniqueId().monitorId) &&
+            AppZoneHistory::instance().GetAppLastZoneIndexSet(stampedWindow.window, workAreaForMonitor->UniqueId(), workAreaForMonitor->GetLayoutId()) == stampedWindow.zones)
         {
             workAreaForMonitor->Snap(stampedWindow.window, stampedWindow.zones, false);
         }
@@ -139,6 +143,11 @@ void WorkAreaConfiguration::AssignStampedWindows(const std::vector<StampedWindow
                 if (monitor == stampedWindow.monitor)
                 {
                     // the loop above already checked this work area
+                    continue;
+                }
+
+                if (FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(stampedWindow.window, workArea->UniqueId().monitorId))
+                {
                     continue;
                 }
 
@@ -165,8 +174,11 @@ void WorkAreaConfiguration::AssignStampedWindows(const std::vector<StampedWindow
             continue;
         }
 
+        // a window with zone numbers from another monitor isn't assigned while that monitor has a work area
         const auto workAreaForMonitor = GetWorkArea(stampedWindow.monitor ? stampedWindow.monitor : stampedWindow.nearestMonitor);
-        if (workAreaForMonitor && !FancyZonesWindowUtils::IsExcluded(stampedWindow.window))
+        if (workAreaForMonitor &&
+            !IsZoneIndexPropertyFromOtherWorkArea(stampedWindow.window, *workAreaForMonitor) &&
+            !FancyZonesWindowUtils::IsExcluded(stampedWindow.window))
         {
             workAreaForMonitor->AssignStampedWindow(stampedWindow.window, stampedWindow.zones);
         }
@@ -183,6 +195,24 @@ bool WorkAreaConfiguration::IsWindowAssigned(HWND window) const
     for (const auto& [_, workArea] : m_workAreaMap)
     {
         if (workArea && !workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window).empty())
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool WorkAreaConfiguration::IsZoneIndexPropertyFromOtherWorkArea(HWND window, const WorkArea& workArea) const
+{
+    if (!FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, workArea.UniqueId().monitorId))
+    {
+        return false;
+    }
+
+    for (const auto& [_, otherWorkArea] : m_workAreaMap)
+    {
+        if (otherWorkArea && FancyZonesWindowProperties::IsZoneIndexPropertyFromMonitor(window, otherWorkArea->UniqueId().monitorId))
         {
             return true;
         }

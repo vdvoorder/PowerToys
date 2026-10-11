@@ -570,6 +570,51 @@ ZoneIndexSet AppZoneHistory::GetAppLastZoneIndexSet(HWND window, const FancyZone
     return {};
 }
 
+std::vector<FancyZonesDataTypes::AppZoneHistoryData> AppZoneHistory::GetAppZoneHistory(HWND window, const FancyZonesDataTypes::WorkAreaId& workAreaId) const
+{
+    auto processPath = get_process_path_waiting_uwp(window);
+    if (processPath.empty())
+    {
+        Logger::error("Process path is empty");
+        return {};
+    }
+
+    auto app = processPath;
+    auto pos = processPath.find_last_of('\\');
+    if (pos != std::string::npos && pos + 1 < processPath.length())
+    {
+        app = processPath.substr(pos + 1);
+    }
+
+    Logger::info(L"Get {} zone history on work area: {}", app, workAreaId.toString());
+
+    auto history = m_history.find(processPath);
+    if (history == std::end(m_history))
+    {
+        return {};
+    }
+
+    std::vector<FancyZonesDataTypes::AppZoneHistoryData> workAreaData{};
+    const auto& perDesktopData = history->second;
+    for (const auto& data : perDesktopData)
+    {
+        if (data.workAreaId == workAreaId)
+        {
+            if (data.workAreaId.virtualDesktopId == workAreaId.virtualDesktopId || data.workAreaId.virtualDesktopId == GUID_NULL)
+            {
+                workAreaData.push_back(data);
+            }
+        }
+    }
+
+    if (!workAreaData.empty())
+    {
+        Logger::info(L"App zone history found on the work area {}", workAreaData.front().workAreaId.toString());
+    }
+
+    return workAreaData;
+}
+
 void AppZoneHistory::SyncVirtualDesktops(const GUID& currentVirtualDesktop, const GUID& lastUsedVirtualDesktop, std::optional<std::vector<GUID>> desktops)
 {
     TAppZoneHistoryMap history;

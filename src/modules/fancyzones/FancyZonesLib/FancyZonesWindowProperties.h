@@ -28,8 +28,10 @@ namespace FancyZonesWindowProperties
     ZoneIndexSet RetrieveZoneIndexProperty(HWND window);
 
     // The monitor where the zone index property was stamped. It's removed together with the zone index property.
+    // A zone index property that was stamped without it is neither from the given monitor nor from another one.
     void StampZoneIndexMonitorProperty(HWND window, const FancyZonesDataTypes::MonitorId& monitorId);
     bool IsZoneIndexPropertyFromAnotherMonitor(HWND window, const FancyZonesDataTypes::MonitorId& monitorId);
+    bool IsZoneIndexPropertyFromMonitor(HWND window, const FancyZonesDataTypes::MonitorId& monitorId);
 
     void StampMovedOnOpeningProperty(HWND window);
     bool RetrieveMovedOnOpeningProperty(HWND window);

@@ -504,13 +504,14 @@ namespace FancyZonesUnitTests
             .serialNumber = L"stamped-window-other-serial-number"
         };
         const GUID m_layoutId = FancyZonesUtils::GuidFromString(L"{57895235-47E1-48A4-A2E7-2FF151F40564}").value();
+        const GUID m_otherLayoutId = FancyZonesUtils::GuidFromString(L"{6F620499-286C-467A-8241-DB5B006A35A1}").value();
         AppliedLayouts::TAppliedLayoutsMap m_appliedLayouts{};
         std::vector<HWND> m_windows{};
 
-        void ApplyGridLayout(int zoneCount)
+        void ApplyGridLayout(int zoneCount, const GUID& layoutId)
         {
             LayoutData layout{
-                .uuid = m_layoutId,
+                .uuid = layoutId,
                 .type = FancyZonesDataTypes::ZoneSetLayoutType::Grid,
                 .showSpacing = false,
                 .spacing = 0,
@@ -518,6 +519,11 @@ namespace FancyZonesUnitTests
                 .sensitivityRadius = 20,
             };
             AppliedLayouts::instance().ApplyLayout(m_workAreaId, layout);
+        }
+
+        void ApplyGridLayout(int zoneCount)
+        {
+            ApplyGridLayout(zoneCount, m_layoutId);
         }
 
         void ApplyBlankLayout()
@@ -557,10 +563,27 @@ namespace FancyZonesUnitTests
             return AppZoneHistory::instance().GetZoneHistory(get_process_path(window), m_workAreaId).has_value();
         }
 
+        ZoneIndexSet AppZoneHistoryZones(HWND window)
+        {
+            const auto history = AppZoneHistory::instance().GetZoneHistory(get_process_path(window), m_workAreaId);
+            return history.has_value() ? history->zoneIndexSet : ZoneIndexSet{};
+        }
+
+        void SaveAppZoneHistory(HWND window, const WorkArea& workArea, const ZoneIndexSet& zones)
+        {
+            Assert::IsTrue(AppZoneHistory::instance().SetAppLastZones(window, m_workAreaId, workArea.GetLayoutId(), zones));
+        }
+
         HANDLE MonitorOfZoneIndexProperty(HWND window)
         {
             // the name stays on the windows while FancyZones is updated, so it's repeated here and not taken from the library
             return GetPropW(window, L"FancyZones_zones_monitor");
+        }
+
+        void StampZoneIndexPropertyFromAnotherMonitor(HWND window, const ZoneIndexSet& zones)
+        {
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
+            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window, m_otherMonitorId);
         }
 
         void UpdateWindowPositions(WorkArea& workArea)
@@ -721,6 +744,8 @@ namespace FancyZonesUnitTests
 
             Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_workAreaId.monitorId));
             Assert::IsTrue(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_otherMonitorId));
+            Assert::IsTrue(FancyZonesWindowProperties::IsZoneIndexPropertyFromMonitor(window, m_workAreaId.monitorId));
+            Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromMonitor(window, m_otherMonitorId));
         }
 
         TEST_METHOD (MonitorOfZoneIndexPropertyIsDeviceId)
@@ -735,11 +760,13 @@ namespace FancyZonesUnitTests
             auto sameDeviceId = m_otherMonitorId;
             sameDeviceId.deviceId.id = m_workAreaId.monitorId.deviceId.id;
             Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, sameDeviceId));
+            Assert::IsTrue(FancyZonesWindowProperties::IsZoneIndexPropertyFromMonitor(window, sameDeviceId));
 
             // another device with the same handle, instance id, number and serial number is another monitor
             auto otherDeviceId = m_workAreaId.monitorId;
             otherDeviceId.deviceId.id = m_otherMonitorId.deviceId.id;
             Assert::IsTrue(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, otherDeviceId));
+            Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromMonitor(window, otherDeviceId));
         }
 
         TEST_METHOD (MonitorOfZoneIndexPropertyHasFixedValue)
@@ -804,6 +831,10 @@ namespace FancyZonesUnitTests
             // a zone index property that was saved without the monitor isn't from another monitor, whatever the monitor is
             Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_workAreaId.monitorId));
             Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_otherMonitorId));
+
+            // and it isn't from the monitor that is asked for either
+            Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromMonitor(window, m_workAreaId.monitorId));
+            Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromMonitor(window, m_otherMonitorId));
 
             Assert::IsTrue(workArea->Snap(window, zones, false));
 
@@ -882,24 +913,40 @@ namespace FancyZonesUnitTests
 
         TEST_METHOD (AssignStampedWindowFromAnotherMonitor)
         {
-            ApplyGridLayout(4);
-            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
-            const auto window = CreateResizableWindow();
+            // The app has no app zone history on this work area: the window gets the zones with the same numbers,
+            // and the last zone of the layout for the numbers that the layout doesn't have.
+            struct TestCase
+            {
+                int zoneCount;
+                ZoneIndexSet stampedZones;
+                ZoneIndexSet assignedZones;
+            };
+            const std::vector<TestCase> testCases = {
+                { 4, { 1 }, { 1 } },
+                { 2, { 3 }, { 1 } },
+                { 2, { 0, 3 }, { 0, 1 } },
+                { 2, { 2, 3 }, { 1 } },
+            };
 
-            const ZoneIndexSet zones = { 1 };
-            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
-            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window, m_otherMonitorId);
+            for (const auto& testCase : testCases)
+            {
+                ApplyGridLayout(testCase.zoneCount);
+                const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+                const auto window = CreateResizableWindow();
 
-            Assert::IsFalse(workArea->AssignStampedWindow(window, zones));
+                StampZoneIndexPropertyFromAnotherMonitor(window, testCase.stampedZones);
+                const auto monitor = MonitorOfZoneIndexProperty(window);
+                Assert::IsNotNull(monitor);
 
-            Assert::IsTrue(workArea->GetLayoutWindows().SnappedWindows().empty());
+                Assert::IsTrue(workArea->AssignStampedWindow(window, testCase.stampedZones));
 
-            // the same zones are assigned when they were saved on the monitor of the work area
-            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window, m_workAreaId.monitorId);
+                Assert::IsTrue(testCase.assignedZones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
 
-            Assert::IsTrue(workArea->AssignStampedWindow(window, zones));
-
-            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+                // nothing is saved for the window
+                Assert::IsTrue(testCase.stampedZones == FancyZonesWindowProperties::RetrieveZoneIndexProperty(window));
+                Assert::IsTrue(monitor == MonitorOfZoneIndexProperty(window));
+                Assert::IsFalse(HasAppZoneHistory(window));
+            }
         }
 
         TEST_METHOD (AssignStampedWindowAgainKeepsOrderInZone)
@@ -1097,6 +1144,272 @@ namespace FancyZonesUnitTests
             CustomAssert::AreEqual(snappedZoneRect, Helpers::WaitForWindowRect(snappedWindow, snappedZoneRect));
             CustomAssert::AreEqual(stampedZoneRect, Helpers::WaitForWindowRect(stampedWindow, stampedZoneRect));
         }
+
+        TEST_METHOD (AssignStampedWindowFromAnotherMonitorWithAppZoneHistory)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet stampedZones = { 0 };
+            const ZoneIndexSet appZoneHistoryZones = { 1 };
+            SaveAppZoneHistory(window, *workArea, appZoneHistoryZones);
+            StampZoneIndexPropertyFromAnotherMonitor(window, stampedZones);
+            const auto monitor = MonitorOfZoneIndexProperty(window);
+            Assert::IsNotNull(monitor);
+
+            Assert::IsTrue(workArea->AssignStampedWindow(window, stampedZones));
+
+            // the window gets the zones that its app was in last on this work area, and nothing is saved for it
+            Assert::IsTrue(appZoneHistoryZones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+            Assert::IsTrue(stampedZones == FancyZonesWindowProperties::RetrieveZoneIndexProperty(window));
+            Assert::IsTrue(monitor == MonitorOfZoneIndexProperty(window));
+            Assert::IsTrue(appZoneHistoryZones == AppZoneHistoryZones(window));
+        }
+
+        TEST_METHOD (AssignStampedWindowFromAnotherMonitorWithAppZoneHistoryForMissingZone)
+        {
+            ApplyGridLayout(2);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            // the app zone history was saved when the layout had more zones
+            const ZoneIndexSet stampedZones = { 0 };
+            SaveAppZoneHistory(window, *workArea, { 3 });
+            StampZoneIndexPropertyFromAnotherMonitor(window, stampedZones);
+
+            Assert::IsTrue(workArea->AssignStampedWindow(window, stampedZones));
+
+            Assert::IsTrue(stampedZones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+        }
+
+        TEST_METHOD (AssignStampedWindowFromAnotherMonitorWithAppZoneHistoryOfAnotherLayout)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet stampedZones = { 0 };
+            const ZoneIndexSet appZoneHistoryZones = { 2 };
+            SaveAppZoneHistory(window, *workArea, appZoneHistoryZones);
+            StampZoneIndexPropertyFromAnotherMonitor(window, stampedZones);
+
+            // another layout that has the zone of the app zone history
+            ApplyGridLayout(3, m_otherLayoutId);
+            workArea->InitLayout();
+            Assert::AreEqual(static_cast<size_t>(3), workArea->GetLayout()->Zones().size());
+
+            Assert::IsTrue(workArea->AssignStampedWindow(window, stampedZones));
+
+            // the window gets the zones that its app was in last on this work area, also when another layout was applied then
+            Assert::IsTrue(appZoneHistoryZones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+        }
+
+        TEST_METHOD (AssignStampedWindowFromAnotherMonitorWithAppZoneHistoryOfAnotherLayoutForMissingZone)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet stampedZones = { 0 };
+            SaveAppZoneHistory(window, *workArea, { 2 });
+            StampZoneIndexPropertyFromAnotherMonitor(window, stampedZones);
+
+            // another layout that doesn't have the zone of the app zone history
+            ApplyGridLayout(2, m_otherLayoutId);
+            workArea->InitLayout();
+            Assert::AreEqual(static_cast<size_t>(2), workArea->GetLayout()->Zones().size());
+
+            Assert::IsTrue(workArea->AssignStampedWindow(window, stampedZones));
+
+            Assert::IsTrue(stampedZones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+        }
+
+        TEST_METHOD (AssignStampedWindowFromAnotherMonitorWithAppZoneHistoryOfSeveralLayouts)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            // the app has two entries for this work area, and the entry of the current layout isn't the first one
+            const ZoneIndexSet stampedZones = { 2 };
+            const ZoneIndexSet appZoneHistoryZones = { 1 };
+            AppZoneHistory::TAppZoneHistoryMap history{};
+            history.insert({ get_process_path(window), std::vector<FancyZonesDataTypes::AppZoneHistoryData>{
+                FancyZonesDataTypes::AppZoneHistoryData{ .layoutId = m_otherLayoutId, .workAreaId = m_workAreaId, .zoneIndexSet = { 0 } },
+                FancyZonesDataTypes::AppZoneHistoryData{ .layoutId = m_layoutId, .workAreaId = m_workAreaId, .zoneIndexSet = appZoneHistoryZones },
+            } });
+            AppZoneHistory::instance().SetAppZoneHistory(history);
+            StampZoneIndexPropertyFromAnotherMonitor(window, stampedZones);
+
+            Assert::IsTrue(workArea->AssignStampedWindow(window, stampedZones));
+
+            // the window gets the zones that were saved for the current layout
+            Assert::IsTrue(appZoneHistoryZones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+        }
+
+        TEST_METHOD (AssignStampedWindowFromThisMonitorIgnoresAppZoneHistory)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto windowWithMonitor = CreateResizableWindow();
+            const auto windowWithoutMonitor = CreateResizableWindow();
+
+            const ZoneIndexSet zones = { 1 };
+            SaveAppZoneHistory(windowWithMonitor, *workArea, { 0 });
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(windowWithMonitor, zones));
+            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(windowWithMonitor, m_workAreaId.monitorId);
+            Assert::IsNotNull(MonitorOfZoneIndexProperty(windowWithMonitor));
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(windowWithoutMonitor, zones));
+
+            Assert::IsTrue(workArea->AssignStampedWindow(windowWithMonitor, zones));
+            Assert::IsTrue(workArea->AssignStampedWindow(windowWithoutMonitor, zones));
+
+            // zone numbers that were saved on this monitor, or without the monitor, are used as they are
+            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(windowWithMonitor));
+            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(windowWithoutMonitor));
+        }
+
+        TEST_METHOD (UpdateWindowPositionsKeepsZonesWhenAppZoneHistoryChanges)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet stampedZones = { 2 };
+            const ZoneIndexSet zones = { 1 };
+            SaveAppZoneHistory(window, *workArea, zones);
+            StampZoneIndexPropertyFromAnotherMonitor(window, stampedZones);
+            Assert::IsTrue(workArea->AssignStampedWindow(window, stampedZones));
+            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+
+            SaveAppZoneHistory(window, *workArea, { 0 });
+            UpdateWindowPositions(*workArea);
+
+            // the window keeps the zones that it has on this work area
+            const auto zoneRect = workArea->GetLayout()->Zones().at(1).GetZoneRect();
+            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+            CustomAssert::AreEqual(zoneRect, Helpers::WaitForWindowRect(window, zoneRect));
+        }
+
+        TEST_METHOD (UpdateWindowPositionsKeepsZonesOfWindowFromAnotherMonitorOnLayoutChange)
+        {
+            ApplyGridLayout(2);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            // the layout doesn't have zone 3, the window gets the last zone of the layout
+            const ZoneIndexSet stampedZones = { 3 };
+            const ZoneIndexSet zones = { 1 };
+            StampZoneIndexPropertyFromAnotherMonitor(window, stampedZones);
+            Assert::IsTrue(workArea->AssignStampedWindow(window, stampedZones));
+            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+
+            // a layout that has zone 3: the window keeps the zone number that it has on this work area
+            ApplyGridLayout(4);
+            workArea->InitLayout();
+            Assert::AreEqual(static_cast<size_t>(4), workArea->GetLayout()->Zones().size());
+            UpdateWindowPositions(*workArea);
+
+            const auto zoneRect = workArea->GetLayout()->Zones().at(1).GetZoneRect();
+            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+            CustomAssert::AreEqual(zoneRect, Helpers::WaitForWindowRect(window, zoneRect));
+
+            // a layout with one zone
+            ApplyGridLayout(1);
+            workArea->InitLayout();
+            Assert::AreEqual(static_cast<size_t>(1), workArea->GetLayout()->Zones().size());
+            UpdateWindowPositions(*workArea);
+
+            const auto onlyZoneRect = workArea->GetLayout()->Zones().at(0).GetZoneRect();
+            Assert::IsTrue(ZoneIndexSet{ 0 } == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+            CustomAssert::AreEqual(onlyZoneRect, Helpers::WaitForWindowRect(window, onlyZoneRect));
+        }
+
+        TEST_METHOD (UpdateWindowPositionsMovesWindowFromAnotherMonitorToLastZoneOfLayout)
+        {
+            ApplyGridLayout(3);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            // the window gets zone 2 on this work area, the zone that its app was in last
+            const ZoneIndexSet stampedZones = { 0 };
+            SaveAppZoneHistory(window, *workArea, { 2 });
+            StampZoneIndexPropertyFromAnotherMonitor(window, stampedZones);
+            Assert::IsTrue(workArea->AssignStampedWindow(window, stampedZones));
+            Assert::IsTrue(ZoneIndexSet{ 2 } == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+
+            // after that the app zone history changes to the zone number of the zone index property
+            SaveAppZoneHistory(window, *workArea, stampedZones);
+
+            // Another layout, without zone 2. The window gets the last zone of the layout in place of the zone that it has
+            // on this work area, and not the zones of the app zone history of the first layout or of its zone index property.
+            ApplyGridLayout(2, m_otherLayoutId);
+            workArea->InitLayout();
+            Assert::AreEqual(static_cast<size_t>(2), workArea->GetLayout()->Zones().size());
+            UpdateWindowPositions(*workArea);
+
+            const auto zoneRect = workArea->GetLayout()->Zones().at(1).GetZoneRect();
+            Assert::IsTrue(ZoneIndexSet{ 1 } == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+            CustomAssert::AreEqual(zoneRect, Helpers::WaitForWindowRect(window, zoneRect));
+        }
+
+        TEST_METHOD (UpdateWindowPositionsSnappedWindowsFirst)
+        {
+            ApplyGridLayout(3);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window1 = CreateResizableWindow();
+            const auto window2 = CreateResizableWindow();
+
+            // the window list is in the order of the handles, the window from another monitor is the first one in it
+            const auto stampedWindow = std::less<HWND>{}(window1, window2) ? window1 : window2;
+            const auto snappedWindow = stampedWindow == window1 ? window2 : window1;
+
+            // the window from another monitor gets the zones that its app was in last, which the snapped window saved
+            const ZoneIndexSet stampedZones = { 1 };
+            Assert::IsTrue(workArea->Snap(snappedWindow, { 2 }, false));
+            StampZoneIndexPropertyFromAnotherMonitor(stampedWindow, stampedZones);
+            Assert::IsTrue(workArea->AssignStampedWindow(stampedWindow, stampedZones));
+            Assert::IsTrue(ZoneIndexSet{ 2 } == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(stampedWindow));
+
+            const ZoneIndexSet snappedZones = { 0 };
+            Assert::IsTrue(workArea->Snap(snappedWindow, snappedZones, false));
+
+            // Another layout, without zone 2. The app zone history of that layout is saved when the snapped window is snapped again,
+            // and the window from another monitor gets these zones in the same update.
+            ApplyGridLayout(2, m_otherLayoutId);
+            workArea->InitLayout();
+            Assert::AreEqual(static_cast<size_t>(2), workArea->GetLayout()->Zones().size());
+            UpdateWindowPositions(*workArea);
+
+            Assert::IsTrue(snappedZones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(stampedWindow));
+        }
+
+        TEST_METHOD (UpdateWindowPositionsKeepsOrderOfWindowsFromAnotherMonitor)
+        {
+            ApplyGridLayout(2);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window1 = CreateResizableWindow();
+            const auto window2 = CreateResizableWindow();
+
+            // both windows get the last zone of the layout, which isn't the zone of their zone index property
+            const ZoneIndexSet stampedZones = { 3 };
+            StampZoneIndexPropertyFromAnotherMonitor(window1, stampedZones);
+            StampZoneIndexPropertyFromAnotherMonitor(window2, stampedZones);
+            Assert::IsTrue(workArea->AssignStampedWindow(window1, stampedZones));
+            Assert::IsTrue(workArea->AssignStampedWindow(window2, stampedZones));
+
+            const auto sortKey1 = FancyZonesWindowProperties::GetTabSortKeyWithinZone(window1);
+            const auto sortKey2 = FancyZonesWindowProperties::GetTabSortKeyWithinZone(window2);
+            Assert::IsTrue(sortKey1.has_value());
+            Assert::IsTrue(sortKey2.has_value());
+
+            UpdateWindowPositions(*workArea);
+
+            // assigning the window again would move it to the end of its zone
+            Assert::IsTrue(sortKey1 == FancyZonesWindowProperties::GetTabSortKeyWithinZone(window1));
+            Assert::IsTrue(sortKey2 == FancyZonesWindowProperties::GetTabSortKeyWithinZone(window2));
+        }
     };
 
     TEST_CLASS (WorkAreaConfigurationUnitTests)
@@ -1167,12 +1480,27 @@ namespace FancyZonesUnitTests
             workAreaConfiguration.AddWorkArea(monitor, WorkArea::Create(m_hInst, workAreaId, {}, m_workAreaRect));
         }
 
-        HWND CreateStampedWindow(const ZoneIndexSet& zones, const std::wstring& title)
+        // The work areas are created again for one monitor, as after a display change that replaced the monitor.
+        void ReplaceMonitor(size_t workAreaIndex, int zoneCount)
+        {
+            m_workAreaConfiguration.Clear();
+
+            ApplyGridLayout(m_workAreaIds[workAreaIndex], zoneCount);
+            m_workAreaConfiguration.AddWorkArea(m_monitors[workAreaIndex], WorkArea::Create(m_hInst, m_workAreaIds[workAreaIndex], {}, m_workAreaRect));
+        }
+
+        HWND CreateResizableWindow(const std::wstring& title)
         {
             const auto window = Mocks::WindowCreate(m_hInst, title, L"", 0, WS_THICKFRAME);
             m_windows.push_back(window);
 
             SetWindowPos(window, nullptr, 150, 150, 450, 550, SWP_SHOWWINDOW);
+            return window;
+        }
+
+        HWND CreateStampedWindow(const ZoneIndexSet& zones, const std::wstring& title)
+        {
+            const auto window = CreateResizableWindow(title);
             Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
             return window;
         }
@@ -1180,6 +1508,14 @@ namespace FancyZonesUnitTests
         HWND CreateStampedWindow(const ZoneIndexSet& zones)
         {
             return CreateStampedWindow(zones, L"");
+        }
+
+        // A window that is snapped without having the zone index property gets it together with the monitor of the work area.
+        HWND CreateSnappedWindow(size_t workAreaIndex, const ZoneIndexSet& zones)
+        {
+            const auto window = CreateResizableWindow(L"");
+            Assert::IsTrue(m_workAreaConfiguration.GetWorkArea(m_monitors[workAreaIndex])->Snap(window, zones, false));
+            return window;
         }
 
         RECT WindowRect(HWND window)
@@ -1731,6 +2067,198 @@ namespace FancyZonesUnitTests
             const auto zoneRect = workArea->GetLayout()->Zones().at(3).GetZoneRect();
             Assert::IsTrue(zones == AssignedZones(window, 0));
             CustomAssert::AreEqual(zoneRect, Helpers::WaitForWindowRect(window, zoneRect));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsZoneIndexPropertyFromAnotherMonitor)
+        {
+            // The zone index property was saved on the second monitor and the window is placed on the first one.
+            // The app zone history has the same zones on both.
+            const ZoneIndexSet zones = { 0 };
+            const auto window1 = CreateStampedWindow(zones);
+            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window1, m_workAreaIds[1].monitorId);
+            SaveAppZoneHistory(window1, 0, zones);
+            SaveAppZoneHistory(window1, 1, zones);
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window1, .zones = zones, .monitor = m_monitors[0] } }, true, false);
+
+            // the window is snapped on the monitor where its zones were saved
+            Assert::IsTrue(AssignedZones(window1, 0).empty());
+            Assert::IsTrue(zones == AssignedZones(window1, 1));
+            Assert::IsTrue(IsSnapped(window1, 1));
+
+            // a second window with the same properties and the same app zone history, the other work areas aren't checked
+            AppZoneHistory::instance().SetAppZoneHistory({});
+            const auto window2 = CreateStampedWindow(zones);
+            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window2, m_workAreaIds[1].monitorId);
+            SaveAppZoneHistory(window2, 0, zones);
+            SaveAppZoneHistory(window2, 1, zones);
+
+            RECT rect{};
+            GetWindowRect(window2, &rect);
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window2, .zones = zones, .monitor = m_monitors[0] } }, false, true);
+
+            // The window isn't snapped on the monitor where it's placed. It isn't assigned there either,
+            // because the monitor where its zones were saved has a work area.
+            Assert::IsTrue(AssignedZones(window2, 0).empty());
+            Assert::IsTrue(AssignedZones(window2, 1).empty());
+            CustomAssert::AreEqual(rect, WindowRect(window2));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsMonitorOfZoneIndexPropertyHasWorkArea)
+        {
+            // The zone index property was saved on the second monitor and the window is placed on the first one.
+            // The app zone history of the second monitor has other zones.
+            const ZoneIndexSet zones = { 0 };
+            const auto window = CreateStampedWindow(zones);
+            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window, m_workAreaIds[1].monitorId);
+            SaveAppZoneHistory(window, 1, { 2 });
+
+            RECT rect{};
+            GetWindowRect(window, &rect);
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = zones, .monitor = m_monitors[0] } }, true, true);
+
+            // the window stays as it is while the monitor where its zones were saved has a work area
+            Assert::IsTrue(AssignedZones(window, 0).empty());
+            Assert::IsTrue(AssignedZones(window, 1).empty());
+            CustomAssert::AreEqual(rect, WindowRect(window));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsMonitorOfZoneIndexPropertyWithoutWorkArea)
+        {
+            // the zone index property was saved on a monitor that has no work area, the window is placed on the first monitor
+            const FancyZonesDataTypes::MonitorId monitorId = { .deviceId = { .id = L"stamped-windows-device-id-3" } };
+            const ZoneIndexSet zones = { 0 };
+            const auto window = CreateStampedWindow(zones);
+            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window, monitorId);
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = zones, .monitor = m_monitors[0] } }, true, false);
+
+            // the window is assigned on the monitor where it's placed
+            Assert::IsTrue(zones == AssignedZones(window, 0));
+            Assert::IsTrue(AssignedZones(window, 1).empty());
+        }
+
+        TEST_METHOD (UpdateStampedWindowsMonitorReplaced)
+        {
+            // a monitor with two zones
+            ReplaceMonitor(0, 2);
+            const ZoneIndexSet zones1 = { 1 };
+            const ZoneIndexSet zones2 = { 0 };
+            const auto window1 = CreateSnappedWindow(0, zones1);
+            const auto window2 = CreateSnappedWindow(0, zones2);
+
+            // a monitor with one zone replaces it
+            ReplaceMonitor(1, 1);
+            const std::vector<StampedWindow> windowsOnSecondMonitor = { StampedWindow{ .window = window1, .zones = zones1, .monitor = m_monitors[1] },
+                                                                        StampedWindow{ .window = window2, .zones = zones2, .monitor = m_monitors[1] } };
+            m_workAreaConfiguration.UpdateStampedWindows(windowsOnSecondMonitor, true, true);
+
+            // both windows are in the only zone, and nothing is saved for them
+            const ZoneIndexSet onlyZone = { 0 };
+            const auto onlyZoneRect = m_workAreaConfiguration.GetWorkArea(m_monitors[1])->GetLayout()->Zones().at(0).GetZoneRect();
+            Assert::IsTrue(onlyZone == AssignedZones(window1, 1));
+            Assert::IsTrue(onlyZone == AssignedZones(window2, 1));
+            CustomAssert::AreEqual(onlyZoneRect, Helpers::WaitForWindowRect(window1, onlyZoneRect));
+            CustomAssert::AreEqual(onlyZoneRect, Helpers::WaitForWindowRect(window2, onlyZoneRect));
+            Assert::IsTrue(zones1 == FancyZonesWindowProperties::RetrieveZoneIndexProperty(window1));
+            Assert::IsTrue(zones2 == FancyZonesWindowProperties::RetrieveZoneIndexProperty(window2));
+            Assert::IsTrue(AppZoneHistoryZones(window1, 1).empty());
+
+            // the monitor with two zones is back
+            ReplaceMonitor(0, 2);
+            const std::vector<StampedWindow> windowsOnFirstMonitor = { StampedWindow{ .window = window1, .zones = zones1, .monitor = m_monitors[0] },
+                                                                       StampedWindow{ .window = window2, .zones = zones2, .monitor = m_monitors[0] } };
+            m_workAreaConfiguration.UpdateStampedWindows(windowsOnFirstMonitor, true, true);
+
+            // both windows are in their own zones again
+            const auto& zones = m_workAreaConfiguration.GetWorkArea(m_monitors[0])->GetLayout()->Zones();
+            const auto zoneRect1 = zones.at(1).GetZoneRect();
+            const auto zoneRect2 = zones.at(0).GetZoneRect();
+            Assert::IsTrue(zones1 == AssignedZones(window1, 0));
+            Assert::IsTrue(zones2 == AssignedZones(window2, 0));
+            CustomAssert::AreEqual(zoneRect1, Helpers::WaitForWindowRect(window1, zoneRect1));
+            CustomAssert::AreEqual(zoneRect2, Helpers::WaitForWindowRect(window2, zoneRect2));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsWindowFromOtherMonitorTakesAppZoneHistory)
+        {
+            // a window that was snapped on a monitor with one zone
+            ReplaceMonitor(1, 1);
+            const ZoneIndexSet zones = { 0 };
+            const auto window = CreateSnappedWindow(1, zones);
+
+            // a monitor with two zones replaces it, the app was in zone 1 there
+            ReplaceMonitor(0, 2);
+            const ZoneIndexSet appZoneHistoryZones = { 1 };
+            SaveAppZoneHistory(window, 0, appZoneHistoryZones);
+            const std::vector<StampedWindow> windows = { StampedWindow{ .window = window, .zones = zones, .monitor = m_monitors[0] } };
+
+            m_workAreaConfiguration.UpdateStampedWindows(windows, true, true);
+
+            // the window gets the zones of the app zone history, and nothing is saved for it
+            const auto zoneRect = m_workAreaConfiguration.GetWorkArea(m_monitors[0])->GetLayout()->Zones().at(1).GetZoneRect();
+            Assert::IsTrue(appZoneHistoryZones == AssignedZones(window, 0));
+            CustomAssert::AreEqual(zoneRect, Helpers::WaitForWindowRect(window, zoneRect));
+            Assert::IsTrue(zones == FancyZonesWindowProperties::RetrieveZoneIndexProperty(window));
+            Assert::IsTrue(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_workAreaIds[0].monitorId));
+            Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_workAreaIds[1].monitorId));
+            Assert::IsFalse(IsSnapped(window, 0));
+
+            // The window keeps these zones only while the work area exists. After the app zone history changed
+            // and the work areas were created again, it gets the new zones of the app zone history.
+            const ZoneIndexSet newAppZoneHistoryZones = { 0, 1 };
+            SaveAppZoneHistory(window, 0, newAppZoneHistoryZones);
+            ReplaceMonitor(0, 2);
+
+            m_workAreaConfiguration.UpdateStampedWindows(windows, true, false);
+
+            Assert::IsTrue(newAppZoneHistoryZones == AssignedZones(window, 0));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsSameAppDifferentZonesMonitorReplaced)
+        {
+            // Two windows of one app in different zones of a monitor with two zones.
+            // The app zone history of that monitor has the zones of the window that was snapped first.
+            ReplaceMonitor(0, 2);
+            const ZoneIndexSet zones1 = { 1 };
+            const ZoneIndexSet zones2 = { 0 };
+            const auto window1 = CreateSnappedWindow(0, zones1);
+            const auto window2 = CreateSnappedWindow(0, zones2);
+            Assert::IsTrue(zones1 == AppZoneHistoryZones(window1, 0));
+
+            // A monitor with one zone replaces it. The app zone history there has the zone number of the second window.
+            ReplaceMonitor(1, 1);
+            SaveAppZoneHistory(window1, 1, zones2);
+            const std::vector<StampedWindow> windowsOnSecondMonitor = { StampedWindow{ .window = window1, .zones = zones1, .monitor = m_monitors[1] },
+                                                                        StampedWindow{ .window = window2, .zones = zones2, .monitor = m_monitors[1] } };
+            m_workAreaConfiguration.UpdateStampedWindows(windowsOnSecondMonitor, true, true);
+
+            Assert::IsTrue(zones2 == AssignedZones(window1, 1));
+            Assert::IsTrue(zones2 == AssignedZones(window2, 1));
+
+            // the monitor with two zones is back
+            ReplaceMonitor(0, 2);
+            const std::vector<StampedWindow> windowsOnFirstMonitor = { StampedWindow{ .window = window1, .zones = zones1, .monitor = m_monitors[0] },
+                                                                       StampedWindow{ .window = window2, .zones = zones2, .monitor = m_monitors[0] } };
+            m_workAreaConfiguration.UpdateStampedWindows(windowsOnFirstMonitor, true, true);
+
+            // both windows are in their own zones again
+            const auto& zones = m_workAreaConfiguration.GetWorkArea(m_monitors[0])->GetLayout()->Zones();
+            const auto zoneRect1 = zones.at(1).GetZoneRect();
+            const auto zoneRect2 = zones.at(0).GetZoneRect();
+            Assert::IsTrue(zones1 == AssignedZones(window1, 0));
+            Assert::IsTrue(zones2 == AssignedZones(window2, 0));
+            CustomAssert::AreEqual(zoneRect1, Helpers::WaitForWindowRect(window1, zoneRect1));
+            CustomAssert::AreEqual(zoneRect2, Helpers::WaitForWindowRect(window2, zoneRect2));
+
+            // and their zones are still the ones of the monitor with two zones
+            for (const auto window : { window1, window2 })
+            {
+                Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_workAreaIds[0].monitorId));
+                Assert::IsTrue(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_workAreaIds[1].monitorId));
+            }
         }
     };
 }

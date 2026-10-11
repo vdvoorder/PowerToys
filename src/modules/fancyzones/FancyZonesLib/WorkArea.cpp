@@ -173,16 +173,16 @@ bool WorkArea::Unsnap(HWND window)
 
 bool WorkArea::AssignStampedWindow(HWND window, const ZoneIndexSet& stampedZones)
 {
-    // zone numbers that were assigned on another monitor mean other places here
-    if (FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_uniqueId.monitorId) || !AreZonesInLayout(stampedZones))
+    const auto zones = ZonesForStampedWindow(window, stampedZones);
+    if (!AreZonesInLayout(zones))
     {
         return false;
     }
 
     // assigning the same zones again would only move the window to the end of the window switching order
-    if (m_layoutWindows.GetZoneIndexSetFromWindow(window) != stampedZones)
+    if (m_layoutWindows.GetZoneIndexSetFromWindow(window) != zones)
     {
-        m_layoutWindows.Assign(window, stampedZones);
+        m_layoutWindows.Assign(window, zones);
     }
 
     if (m_windowsAssignedByStamp.insert(window).second)
@@ -301,35 +301,44 @@ void WorkArea::UpdateWindowPositions()
     }
 
     const auto& snappedWindows = m_layoutWindows.SnappedWindows();
+
+    // snapped windows first: Snap saves the app zone history for the current layout,
+    // and the zones of a window from another monitor can depend on it
     for (const auto& [window, zones] : snappedWindows)
     {
+        if (m_windowsAssignedByStamp.contains(window))
+        {
+            continue;
+        }
+
         if (!IsWindow(window))
         {
             // The window was closed. Its app zone history is kept for the next window of the app.
             DismissWindow(window);
-            continue;
         }
+        else if (AreZonesInLayout(zones))
+        {
+            // a minimized window stays minimized and gets its new position without the wait
+            Snap(window, zones, false);
+            MoveWindowToZones(window, zones, false);
+        }
+    }
 
+    for (const auto& [window, _] : snappedWindows)
+    {
         if (!m_windowsAssignedByStamp.contains(window))
         {
-            if (AreZonesInLayout(zones))
-            {
-                // a minimized window stays minimized and gets its new position without the wait
-                Snap(window, zones, false);
-                MoveWindowToZones(window, zones, false);
-            }
-
             continue;
         }
 
         // the zone index property and the app zone history of these windows stay as they are
-        if (AssignStampedWindow(window, FancyZonesWindowProperties::RetrieveZoneIndexProperty(window)))
+        if (IsWindow(window) && AssignStampedWindow(window, FancyZonesWindowProperties::RetrieveZoneIndexProperty(window)))
         {
             MoveWindowToZones(window, m_layoutWindows.GetZoneIndexSetFromWindow(window), false);
         }
         else
         {
-            // the window lost the zone index property or the layout doesn't have its zones anymore
+            // the window was closed, lost the zone index property or the layout doesn't have its zones anymore
             DismissWindow(window);
         }
     }
@@ -492,6 +501,74 @@ bool WorkArea::AreZonesInLayout(const ZoneIndexSet& zones) const noexcept
     }
 
     return true;
+}
+
+ZoneIndexSet WorkArea::ClampZonesToLayout(const ZoneIndexSet& zones) const
+{
+    if (!m_layout || m_layout->Zones().empty())
+    {
+        return {};
+    }
+
+    const auto zoneCount = m_layout->Zones().size();
+    const auto lastZone = static_cast<ZoneIndex>(zoneCount - 1);
+
+    ZoneIndexSet zonesInLayout{};
+    for (ZoneIndex zone : zones)
+    {
+        const auto zoneInLayout = static_cast<size_t>(zone) < zoneCount ? zone : lastZone;
+        if (std::find(zonesInLayout.begin(), zonesInLayout.end(), zoneInLayout) == zonesInLayout.end())
+        {
+            zonesInLayout.push_back(zoneInLayout);
+        }
+    }
+
+    return zonesInLayout;
+}
+
+ZoneIndexSet WorkArea::ZonesForStampedWindow(HWND window, const ZoneIndexSet& stampedZones) const
+{
+    if (!FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_uniqueId.monitorId))
+    {
+        return stampedZones;
+    }
+
+    // The zone numbers were assigned on another monitor and mean other places here.
+    // The window keeps the zones it already has on this work area; otherwise it gets the last zones of its app here.
+    const auto assignedZones = m_layoutWindows.GetZoneIndexSetFromWindow(window);
+    if (AreZonesInLayout(assignedZones))
+    {
+        return assignedZones;
+    }
+
+    // one lookup for both uses of the app zone history below, because it reads the process path of the window
+    const auto appZoneHistory = AppZoneHistory::instance().GetAppZoneHistory(window, m_uniqueId);
+    const auto layoutId = GetLayoutId();
+
+    // the zones that were saved for the current layout, from the entry that AppZoneHistory::GetAppLastZoneIndexSet reads
+    const auto currentLayoutData = std::find_if(appZoneHistory.begin(), appZoneHistory.end(), [&](const auto& data) { return data.layoutId == layoutId; });
+    if (currentLayoutData != appZoneHistory.end() && AreZonesInLayout(currentLayoutData->zoneIndexSet))
+    {
+        return currentLayoutData->zoneIndexSet;
+    }
+
+    // the layout doesn't have the zones of the window on this work area anymore
+    if (!assignedZones.empty())
+    {
+        return ClampZonesToLayout(assignedZones);
+    }
+
+    // the zones that were saved for another layout of this work area
+    for (const auto& data : appZoneHistory)
+    {
+        if (data.layoutId != layoutId && AreZonesInLayout(data.zoneIndexSet))
+        {
+            return data.zoneIndexSet;
+        }
+    }
+
+    // the last zone of the layout replaces the zones that the layout doesn't have, in the window list only
+    return ClampZonesToLayout(stampedZones);
 }
 
 void WorkArea::MoveWindowToZones(HWND window, const ZoneIndexSet& zones, bool waitIfMinimized)

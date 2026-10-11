@@ -75,6 +75,8 @@ private:
     void SetWorkAreaWindowAsTopmost(HWND draggedWindow) noexcept;
 
     bool AreZonesInLayout(const ZoneIndexSet& zones) const noexcept;
+    ZoneIndexSet ClampZonesToLayout(const ZoneIndexSet& zones) const;
+    ZoneIndexSet ZonesForStampedWindow(HWND window, const ZoneIndexSet& stampedZones) const;
     void MoveWindowToZones(HWND window, const ZoneIndexSet& zones, bool waitIfMinimized);
     void DismissWindow(HWND window);
 

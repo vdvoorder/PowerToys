@@ -62,6 +62,7 @@ public:
 
     bool IsAnotherWindowOfApplicationInstanceZoned(HWND window, const FancyZonesDataTypes::WorkAreaId& workAreaId) const noexcept;
     ZoneIndexSet GetAppLastZoneIndexSet(HWND window, const FancyZonesDataTypes::WorkAreaId& workAreaId, const GUID& layoutId) const;
+    std::vector<FancyZonesDataTypes::AppZoneHistoryData> GetAppZoneHistory(HWND window, const FancyZonesDataTypes::WorkAreaId& workAreaId) const;
 
     void SyncVirtualDesktops(const GUID& currentVirtualDesktop, const GUID& lastUsedVirtualDesktop, std::optional<std::vector<GUID>> desktops);
     

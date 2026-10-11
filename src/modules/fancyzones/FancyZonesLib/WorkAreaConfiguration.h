@@ -59,9 +59,11 @@ public:
 
     /**
      * Update the windows with the zone index property after a display, work area, virtual desktop or layout change.
-     * A window is snapped on the work area where the app zone history has the same zones for it, the monitor
-     * where the window is placed is checked first. A window without such history is assigned on the monitor
-     * where it's placed, by its zone index property and without saving app zone history.
+     * A window is snapped on the work area where the app zone history has the same zones for it, unless its zone
+     * index property was saved on another monitor; the monitor where the window is placed is checked first.
+     * Every other window is assigned on the monitor where it's placed, without saving app zone history
+     * (WorkArea::AssignStampedWindow). A window whose zone index property was saved on another monitor
+     * isn't assigned while that monitor has a work area.
      *
      * @param[in]  windows               Windows with the zone index property.
      * @param[in]  checkOtherWorkAreas   Whether the app zone history is also checked on the work areas of
@@ -78,6 +80,7 @@ public:
 private:
     void AssignStampedWindows(const std::vector<StampedWindow>& windows, bool checkOtherWorkAreas);
     bool IsWindowAssigned(HWND window) const;
+    bool IsZoneIndexPropertyFromOtherWorkArea(HWND window, const WorkArea& workArea) const;
 
     std::unordered_map<HMONITOR, std::unique_ptr<WorkArea>> m_workAreaMap;
 };
