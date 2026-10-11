@@ -88,6 +88,9 @@ namespace
     constexpr UINT_PTR MonitorRotationCommitTimerId = 0x4D525443;
     constexpr UINT MonitorRotationCommitDelayMillis = 760;
 
+    constexpr UINT_PTR MonitorIdentificationTimerId = 0x4D494454;
+    constexpr UINT MonitorIdentificationIntervalMillis = 1000;
+
     struct WindowRotationSnapshot
     {
         HWND window{};
@@ -340,6 +343,9 @@ protected:
 
 private:
     void UpdateWorkAreas(bool updateWindowPositions) noexcept;
+    void KeepKnownDeviceIds(std::vector<FancyZonesDataTypes::MonitorId>& monitors) noexcept;
+    void StopMonitorIdentificationTimer() noexcept;
+    void OnMonitorIdentificationTimer() noexcept;
     bool ShouldWorkAreasBeRecreated(const std::vector<FancyZonesDataTypes::MonitorId>& monitors, const GUID& virtualDesktop, const std::unordered_map<HMONITOR, std::unique_ptr<WorkArea>>& workAreas) noexcept;
     void CycleWindows(bool reverse) noexcept;
     void RotateWindowsAcrossMonitors(bool reverse) noexcept;
@@ -379,6 +385,7 @@ private:
     MonitorRotation::KeyState m_monitorRotationKeyState;
     std::optional<bool> m_pendingMonitorRotationReverse;
     std::unordered_map<HMONITOR, size_t> m_monitorRotationContentNumbers;
+    std::vector<std::wstring> m_displayNamesToCheck; // displays without display device that the monitor identification timer checks
 
     wil::unique_handle m_terminateEditorEvent; // Handle of FancyZonesEditor.exe we launch and wait on
 
@@ -1093,6 +1100,10 @@ LRESULT FancyZones::WndProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
                 }
             }
         }
+        else if (message == WM_TIMER && wparam == MonitorIdentificationTimerId)
+        {
+            OnMonitorIdentificationTimer();
+        }
         else if (message == WM_PRIV_SETTINGS_CHANGED)
         {
             FancyZonesSettings::instance().LoadSettings();
@@ -1203,6 +1214,8 @@ void FancyZones::UpdateWorkAreas(bool updateWindowPositions) noexcept
 
     if (FancyZonesSettings::settings().spanZonesAcrossMonitors)
     {
+        StopMonitorIdentificationTimer();
+
         std::vector<FancyZonesDataTypes::MonitorId> monitors = { FancyZonesDataTypes::MonitorId{ .monitor = nullptr, .deviceId = { .id = ZonedWindowProperties::MultiMonitorName, .instanceId = ZonedWindowProperties::MultiMonitorInstance } } };
         if (ShouldWorkAreasBeRecreated(monitors, currentVirtualDesktop, m_workAreaConfiguration.GetAllWorkAreas()))
         {
@@ -1228,6 +1241,8 @@ void FancyZones::UpdateWorkAreas(bool updateWindowPositions) noexcept
         auto monitors = MonitorUtils::IdentifyMonitors();
         const auto& workAreas = m_workAreaConfiguration.GetAllWorkAreas();
         
+        KeepKnownDeviceIds(monitors);
+
         if (ShouldWorkAreasBeRecreated(monitors, currentVirtualDesktop, workAreas))
         {
             // See comment above the matching Clear() in the span-zones branch.
@@ -1311,6 +1326,79 @@ void FancyZones::UpdateWorkAreas(bool updateWindowPositions) noexcept
                 workArea->UpdateWindowPositions();
             }
         }
+    }
+}
+
+void FancyZones::KeepKnownDeviceIds(std::vector<FancyZonesDataTypes::MonitorId>& monitors) noexcept
+{
+    // A laptop panel has no active display device while the lid is closed and no other monitor is connected.
+    // MonitorUtils::IdentifyMonitors gives such a display its display name as id. A work area with that id
+    // has another layout than the monitor, and FancyZones gets no display change message when the lid opens.
+    // So the display keeps the device id of its work area, and a timer checks for the display device.
+    std::vector<MonitorUtils::Display::KnownMonitor> knownMonitors{};
+    std::vector<std::wstring> displayNamesToCheck{};
+
+    if (!GetSystemMetrics(SM_REMOTESESSION))
+    {
+        for (const auto& [monitor, workArea] : m_workAreaConfiguration.GetAllWorkAreas())
+        {
+            auto monitorId = workArea->UniqueId().monitorId;
+            monitorId.monitor = monitor;
+            knownMonitors.push_back({ .monitorId = std::move(monitorId), .workAreaRect = workArea->GetWorkAreaRect() });
+        }
+
+        displayNamesToCheck = MonitorUtils::Display::GetDisplayNamesToCheck(monitors, knownMonitors, m_displayNamesToCheck);
+    }
+
+    if (displayNamesToCheck.empty())
+    {
+        StopMonitorIdentificationTimer();
+        return;
+    }
+
+    if (m_displayNamesToCheck.empty())
+    {
+        if (SetTimer(m_window, MonitorIdentificationTimerId, MonitorIdentificationIntervalMillis, nullptr) == 0)
+        {
+            Logger::error(L"Failed to set the monitor identification timer: {}", get_last_error_or_default(GetLastError()));
+            return;
+        }
+
+        Logger::info(L"Start the monitor identification timer");
+    }
+
+    // an id is kept only while the timer runs
+    MonitorUtils::Display::KeepDeviceIds(monitors, displayNamesToCheck, knownMonitors, MonitorUtils::GetWorkAreaRect);
+    m_displayNamesToCheck = std::move(displayNamesToCheck);
+}
+
+void FancyZones::StopMonitorIdentificationTimer() noexcept
+{
+    if (!m_displayNamesToCheck.empty())
+    {
+        Logger::info(L"Stop the monitor identification timer");
+        KillTimer(m_window, MonitorIdentificationTimerId);
+        m_displayNamesToCheck.clear();
+    }
+}
+
+void FancyZones::OnMonitorIdentificationTimer() noexcept
+{
+    if (m_displayNamesToCheck.empty())
+    {
+        KillTimer(m_window, MonitorIdentificationTimerId);
+        return;
+    }
+
+    const auto displayNames = MonitorUtils::Display::GetDisplayNames(MonitorUtils::Display::GetDisplays(false).second);
+    const bool changed = std::any_of(m_displayNamesToCheck.begin(), m_displayNamesToCheck.end(), [&](const std::wstring& displayName) {
+        return std::find(displayNames.begin(), displayNames.end(), displayName) == displayNames.end();
+    });
+
+    if (changed)
+    {
+        Logger::info(L"A display has a display device again or is gone, update the work areas");
+        UpdateWorkAreas(FancyZonesSettings::settings().displayOrWorkAreaChange_moveWindows);
     }
 }
 

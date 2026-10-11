@@ -219,7 +219,129 @@ namespace MonitorUtils
             return result;
         }
 
-        std::pair<bool, std::vector<FancyZonesDataTypes::MonitorId>> GetDisplays()
+        bool IsDisplayName(const FancyZonesDataTypes::DeviceId& deviceId) noexcept
+        {
+            // GetDisplays uses the display name (\\.\DISPLAY1) as id of a display that has no active display device.
+            constexpr std::wstring_view displayNamePrefix = L"\\\\.\\";
+            return deviceId.instanceId.empty() && deviceId.id.starts_with(displayNamePrefix);
+        }
+
+        std::vector<std::wstring> GetDisplayNames(const std::vector<FancyZonesDataTypes::MonitorId>& monitors)
+        {
+            std::vector<std::wstring> result{};
+            for (const auto& monitor : monitors)
+            {
+                if (IsDisplayName(monitor.deviceId))
+                {
+                    result.push_back(monitor.deviceId.id);
+                }
+            }
+
+            return result;
+        }
+
+        namespace
+        {
+            bool IsIdentified(const FancyZonesDataTypes::DeviceId& deviceId, const std::vector<FancyZonesDataTypes::MonitorId>& monitors) noexcept
+            {
+                return std::any_of(monitors.begin(), monitors.end(), [&](const FancyZonesDataTypes::MonitorId& monitor) {
+                    return monitor.deviceId.id == deviceId.id && monitor.deviceId.instanceId == deviceId.instanceId;
+                });
+            }
+
+            bool IsKnownId(const std::wstring& displayName, const std::vector<KnownMonitor>& knownMonitors) noexcept
+            {
+                return std::any_of(knownMonitors.begin(), knownMonitors.end(), [&](const KnownMonitor& known) {
+                    return known.monitorId.deviceId.id == displayName;
+                });
+            }
+
+            bool Contains(const std::vector<std::wstring>& displayNames, const std::wstring& displayName) noexcept
+            {
+                return std::find(displayNames.begin(), displayNames.end(), displayName) != displayNames.end();
+            }
+        }
+
+        std::vector<std::wstring> GetDisplayNamesWithLostDeviceId(const std::vector<FancyZonesDataTypes::MonitorId>& monitors, const std::vector<KnownMonitor>& knownMonitors)
+        {
+            const bool knownMonitorIsMissing = std::any_of(knownMonitors.begin(), knownMonitors.end(), [&](const KnownMonitor& known) {
+                return !IsDisplayName(known.monitorId.deviceId) && !IsIdentified(known.monitorId.deviceId, monitors);
+            });
+            if (!knownMonitorIsMissing)
+            {
+                return {};
+            }
+
+            std::vector<std::wstring> result{};
+            for (const auto& displayName : GetDisplayNames(monitors))
+            {
+                if (!IsKnownId(displayName, knownMonitors))
+                {
+                    result.push_back(displayName);
+                }
+            }
+
+            return result;
+        }
+
+        std::vector<std::wstring> GetDisplayNamesToCheck(const std::vector<FancyZonesDataTypes::MonitorId>& monitors, const std::vector<KnownMonitor>& knownMonitors, const std::vector<std::wstring>& checkedDisplayNames)
+        {
+            auto result = GetDisplayNamesWithLostDeviceId(monitors, knownMonitors);
+            if (checkedDisplayNames.empty())
+            {
+                return result;
+            }
+
+            for (const auto& displayName : GetDisplayNames(monitors))
+            {
+                // a checked display still has no display device, under its display name or under a new one
+                const bool checked = Contains(checkedDisplayNames, displayName) || !IsKnownId(displayName, knownMonitors);
+                if (checked && !Contains(result, displayName))
+                {
+                    result.push_back(displayName);
+                }
+            }
+
+            return result;
+        }
+
+        bool KeepDeviceIds(std::vector<FancyZonesDataTypes::MonitorId>& monitors, const std::vector<std::wstring>& displayNames, const std::vector<KnownMonitor>& knownMonitors, const std::function<FancyZonesUtils::Rect(HMONITOR)>& getWorkAreaRect)
+        {
+            if (monitors.size() != knownMonitors.size())
+            {
+                return false;
+            }
+
+            bool kept = false;
+            for (auto& monitor : monitors)
+            {
+                if (!IsDisplayName(monitor.deviceId) || !Contains(displayNames, monitor.deviceId.id))
+                {
+                    continue;
+                }
+
+                for (const auto& known : knownMonitors)
+                {
+                    if (known.monitorId.monitor != monitor.monitor ||
+                        IsDisplayName(known.monitorId.deviceId) ||
+                        IsIdentified(known.monitorId.deviceId, monitors) ||
+                        known.workAreaRect != getWorkAreaRect(monitor.monitor))
+                    {
+                        continue;
+                    }
+
+                    Logger::info(L"Display {} has no active display device, keep the device id {}", monitor.deviceId.id, known.monitorId.deviceId.id);
+                    monitor.deviceId = known.monitorId.deviceId;
+                    monitor.serialNumber = known.monitorId.serialNumber;
+                    kept = true;
+                    break;
+                }
+            }
+
+            return kept;
+        }
+
+        std::pair<bool, std::vector<FancyZonesDataTypes::MonitorId>> GetDisplays(bool logDisplayDevices)
         {
             bool success = true;
             std::vector<FancyZonesDataTypes::MonitorId> result{};
@@ -241,7 +363,11 @@ namespace MonitorUtils
 
                 while (EnumDisplayDevicesW(monitorInfo.szDevice, displayDeviceIndex, &displayDevice, EDD_GET_DEVICE_INTERFACE_NAME))
                 {
-                    Logger::info(L"Get display device for display {} : {}", monitorInfo.szDevice, displayDevice.DeviceID);
+                    if (logDisplayDevices)
+                    {
+                        Logger::info(L"Get display device for display {} : {}", monitorInfo.szDevice, displayDevice.DeviceID);
+                    }
+
                     if (WI_IsFlagSet(displayDevice.StateFlags, DISPLAY_DEVICE_ACTIVE) &&
                         WI_IsFlagClear(displayDevice.StateFlags, DISPLAY_DEVICE_MIRRORING_DRIVER))
                     {

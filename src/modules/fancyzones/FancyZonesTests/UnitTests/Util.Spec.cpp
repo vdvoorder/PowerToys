@@ -2,6 +2,8 @@
 #include "Util.h"
 #include "FancyZonesLib\util.h"
 #include "FancyZonesLib/JsonHelpers.h"
+#include "FancyZonesLib/FancyZonesWindowProperties.h"
+#include "FancyZonesLib/MonitorUtils.h"
 
 using namespace Microsoft::VisualStudio::CppUnitTestFramework;
 
@@ -416,6 +418,343 @@ namespace FancyZonesUnitTests
         {
             const auto actual = PickNextLayoutId({ m_id1 }, m_id1, false);
             Assert::IsFalse(actual.has_value());
+        }
+    };
+
+    TEST_CLASS (MonitorIdentificationUnitTests)
+    {
+        const FancyZonesDataTypes::DeviceId m_laptopPanel{ .id = L"LEN414D", .instanceId = L"4&117e8519&0&UID8388688", .number = 1 };
+        const FancyZonesDataTypes::DeviceId m_externalMonitor{ .id = L"DEL4308", .instanceId = L"4&117e8519&0&UID4165", .number = 2 };
+        const FancyZonesDataTypes::DeviceId m_displayName1{ .id = L"\\\\.\\DISPLAY1", .instanceId = L"", .number = 1 };
+        const FancyZonesDataTypes::DeviceId m_displayName2{ .id = L"\\\\.\\DISPLAY2", .instanceId = L"", .number = 2 };
+
+        const HMONITOR m_monitor1 = Mocks::Monitor();
+        const HMONITOR m_monitor2 = Mocks::Monitor();
+        const FancyZonesUtils::Rect m_laptopRect{ RECT{ 0, 0, 2880, 1704 } };
+        const FancyZonesUtils::Rect m_externalRect{ RECT{ 0, 0, 5120, 2076 } };
+
+        static FancyZonesDataTypes::MonitorId Monitor(HMONITOR monitor, const FancyZonesDataTypes::DeviceId& deviceId, const std::wstring& serialNumber = L"")
+        {
+            return FancyZonesDataTypes::MonitorId{ .monitor = monitor, .deviceId = deviceId, .serialNumber = serialNumber };
+        }
+
+        static MonitorUtils::Display::KnownMonitor Known(HMONITOR monitor, const FancyZonesDataTypes::DeviceId& deviceId, const FancyZonesUtils::Rect& workAreaRect, const std::wstring& serialNumber = L"")
+        {
+            return MonitorUtils::Display::KnownMonitor{ .monitorId = Monitor(monitor, deviceId, serialNumber), .workAreaRect = workAreaRect };
+        }
+
+        std::function<FancyZonesUtils::Rect(HMONITOR)> WorkAreaRects() const
+        {
+            return [this](HMONITOR monitor) {
+                return monitor == m_monitor1 ? m_laptopRect : m_externalRect;
+            };
+        }
+
+        static void AssertDeviceId(const FancyZonesDataTypes::DeviceId& expected, const FancyZonesDataTypes::DeviceId& actual)
+        {
+            Assert::AreEqual(expected.id, actual.id);
+            Assert::AreEqual(expected.instanceId, actual.instanceId);
+            Assert::AreEqual(expected.number, actual.number);
+        }
+
+        TEST_METHOD (DisplayNameIsDisplayName)
+        {
+            Assert::IsTrue(MonitorUtils::Display::IsDisplayName(m_displayName1));
+        }
+
+        TEST_METHOD (DeviceIdIsNotDisplayName)
+        {
+            Assert::IsFalse(MonitorUtils::Display::IsDisplayName(m_laptopPanel));
+        }
+
+        TEST_METHOD (DeviceIdWithoutInstanceIdIsNotDisplayName)
+        {
+            // SplitDisplayDeviceId returns the whole string as id when it can't split it
+            const auto deviceId = MonitorUtils::Display::SplitDisplayDeviceId(L"\\\\?\\DISPLAY#LEN414D");
+            Assert::IsTrue(deviceId.instanceId.empty());
+            Assert::IsFalse(MonitorUtils::Display::IsDisplayName(deviceId));
+        }
+
+        TEST_METHOD (MultiMonitorIdIsNotDisplayName)
+        {
+            const FancyZonesDataTypes::DeviceId deviceId{ .id = ZonedWindowProperties::MultiMonitorName, .instanceId = ZonedWindowProperties::MultiMonitorInstance };
+            Assert::IsFalse(MonitorUtils::Display::IsDisplayName(deviceId));
+        }
+
+        TEST_METHOD (DisplayNameWithInstanceIdIsNotDisplayName)
+        {
+            auto deviceId = m_displayName1;
+            deviceId.instanceId = m_laptopPanel.instanceId;
+            Assert::IsFalse(MonitorUtils::Display::IsDisplayName(deviceId));
+        }
+
+        TEST_METHOD (DisplayNamesOfMonitors)
+        {
+            const std::vector<std::wstring> expected{ m_displayName2.id };
+            Assert::IsTrue(expected == MonitorUtils::Display::GetDisplayNames({ Monitor(m_monitor1, m_laptopPanel), Monitor(m_monitor2, m_displayName2) }));
+        }
+
+        TEST_METHOD (NoDisplayNamesOfIdentifiedMonitors)
+        {
+            Assert::IsTrue(MonitorUtils::Display::GetDisplayNames({ Monitor(m_monitor1, m_laptopPanel), Monitor(m_monitor2, m_externalMonitor) }).empty());
+        }
+
+        TEST_METHOD (DisplayLostDeviceId)
+        {
+            const std::vector<std::wstring> expected{ m_displayName1.id };
+            Assert::IsTrue(expected == MonitorUtils::Display::GetDisplayNamesWithLostDeviceId({ Monitor(m_monitor1, m_displayName1) }, { Known(m_monitor1, m_laptopPanel, m_laptopRect) }));
+        }
+
+        TEST_METHOD (DisplayWithAnotherNumberLostDeviceId)
+        {
+            // the known monitor was display 2 and the display without display device is display 1
+            const std::vector<std::wstring> expected{ m_displayName1.id };
+            Assert::IsTrue(expected == MonitorUtils::Display::GetDisplayNamesWithLostDeviceId({ Monitor(m_monitor1, m_displayName1) }, { Known(m_monitor2, m_externalMonitor, m_externalRect) }));
+        }
+
+        TEST_METHOD (OneOfTwoDisplaysLostDeviceId)
+        {
+            const std::vector<std::wstring> expected{ m_displayName2.id };
+            const auto actual = MonitorUtils::Display::GetDisplayNamesWithLostDeviceId(
+                { Monitor(m_monitor1, m_laptopPanel), Monitor(m_monitor2, m_displayName2) },
+                { Known(m_monitor1, m_laptopPanel, m_laptopRect), Known(m_monitor2, m_externalMonitor, m_externalRect) });
+            Assert::IsTrue(expected == actual);
+        }
+
+
+        TEST_METHOD (DisplayKnownByDisplayNameLostNothing)
+        {
+            Assert::IsTrue(MonitorUtils::Display::GetDisplayNamesWithLostDeviceId({ Monitor(m_monitor1, m_displayName1) }, { Known(m_monitor1, m_displayName1, m_laptopRect) }).empty());
+        }
+
+        TEST_METHOD (DisplayKnownByDisplayNameLostNothingWhenAnotherMonitorIsGone)
+        {
+            const auto actual = MonitorUtils::Display::GetDisplayNamesWithLostDeviceId(
+                { Monitor(m_monitor2, m_displayName2) },
+                { Known(m_monitor1, m_laptopPanel, m_laptopRect), Known(m_monitor2, m_displayName2, m_externalRect) });
+            Assert::IsTrue(actual.empty());
+        }
+
+        TEST_METHOD (NewDisplayWithoutDisplayDeviceLostNothing)
+        {
+            const auto actual = MonitorUtils::Display::GetDisplayNamesWithLostDeviceId(
+                { Monitor(m_monitor1, m_laptopPanel), Monitor(m_monitor2, m_displayName2) },
+                { Known(m_monitor1, m_laptopPanel, m_laptopRect) });
+            Assert::IsTrue(actual.empty());
+        }
+
+        TEST_METHOD (DisplayLostNothingWhenKnownMonitorIsOnAnotherDisplay)
+        {
+            // the known monitor was display 2, and it is identified as display 1 next to a display 2 without display device
+            auto laptopPanelOnDisplay2 = m_laptopPanel;
+            laptopPanelOnDisplay2.number = 2;
+            const auto actual = MonitorUtils::Display::GetDisplayNamesWithLostDeviceId(
+                { Monitor(m_monitor1, m_laptopPanel), Monitor(m_monitor2, m_displayName2) },
+                { Known(m_monitor2, laptopPanelOnDisplay2, m_laptopRect) });
+            Assert::IsTrue(actual.empty());
+        }
+
+        TEST_METHOD (DisplayLostNothingWithoutKnownMonitors)
+        {
+            Assert::IsTrue(MonitorUtils::Display::GetDisplayNamesWithLostDeviceId({ Monitor(m_monitor1, m_displayName1) }, {}).empty());
+        }
+
+        TEST_METHOD (TwoDisplayNamesOfWhichOneIsKnownLostOneDeviceId)
+        {
+            const std::vector<std::wstring> expected{ m_displayName1.id };
+            const auto actual = MonitorUtils::Display::GetDisplayNamesWithLostDeviceId(
+                { Monitor(m_monitor1, m_displayName1), Monitor(m_monitor2, m_displayName2) },
+                { Known(m_monitor1, m_laptopPanel, m_laptopRect), Known(m_monitor2, m_displayName2, m_externalRect) });
+            Assert::IsTrue(expected == actual);
+        }
+
+        TEST_METHOD (DisplayWithAnotherDisplayNameLostNothing)
+        {
+            // no known monitor with a device id is missing
+            Assert::IsTrue(MonitorUtils::Display::GetDisplayNamesWithLostDeviceId({ Monitor(m_monitor1, m_displayName2) }, { Known(m_monitor1, m_displayName1, m_laptopRect) }).empty());
+        }
+
+        TEST_METHOD (OneOfTwoMonitorsWithSameIdLostDeviceId)
+        {
+            // two monitors of one model differ in the instance id only
+            auto secondExternalMonitor = m_externalMonitor;
+            secondExternalMonitor.instanceId = L"4&117e8519&0&UID4166";
+            const std::vector<std::wstring> expected{ m_displayName2.id };
+            const auto actual = MonitorUtils::Display::GetDisplayNamesWithLostDeviceId(
+                { Monitor(m_monitor1, m_externalMonitor), Monitor(m_monitor2, m_displayName2) },
+                { Known(m_monitor1, m_externalMonitor, m_externalRect), Known(m_monitor2, secondExternalMonitor, m_externalRect) });
+            Assert::IsTrue(expected == actual);
+        }
+
+        TEST_METHOD (CheckDisplayNamesWithLostDeviceId)
+        {
+            const std::vector<std::wstring> expected{ m_displayName1.id };
+            Assert::IsTrue(expected == MonitorUtils::Display::GetDisplayNamesToCheck({ Monitor(m_monitor1, m_displayName1) }, { Known(m_monitor1, m_laptopPanel, m_laptopRect) }, {}));
+        }
+
+        TEST_METHOD (CheckDisplayNameOnce)
+        {
+            // the display lost its device id and was checked before
+            const std::vector<std::wstring> expected{ m_displayName1.id };
+            Assert::IsTrue(expected == MonitorUtils::Display::GetDisplayNamesToCheck({ Monitor(m_monitor1, m_displayName1) }, { Known(m_monitor1, m_laptopPanel, m_laptopRect) }, { m_displayName1.id }));
+        }
+
+        TEST_METHOD (CheckDisplayNameThatWasCheckedBefore)
+        {
+            // the work area of the display has the display name as id, so the display lost no device id now
+            const std::vector<std::wstring> expected{ m_displayName1.id };
+            Assert::IsTrue(expected == MonitorUtils::Display::GetDisplayNamesToCheck({ Monitor(m_monitor1, m_displayName1) }, { Known(m_monitor1, m_displayName1, m_laptopRect) }, { m_displayName1.id }));
+        }
+
+        TEST_METHOD (CheckNewDisplayNameOfDisplayThatWasCheckedBefore)
+        {
+            // the display that was checked as display 1 is display 2 now
+            const std::vector<std::wstring> expected{ m_displayName2.id };
+            Assert::IsTrue(expected == MonitorUtils::Display::GetDisplayNamesToCheck({ Monitor(m_monitor1, m_displayName2) }, { Known(m_monitor1, m_displayName1, m_laptopRect) }, { m_displayName1.id }));
+        }
+
+        TEST_METHOD (DoNotCheckKnownDisplayNameThatWasNotCheckedBefore)
+        {
+            const std::vector<std::wstring> expected{ m_displayName1.id };
+            const auto actual = MonitorUtils::Display::GetDisplayNamesToCheck(
+                { Monitor(m_monitor1, m_displayName1), Monitor(m_monitor2, m_displayName2) },
+                { Known(m_monitor1, m_displayName1, m_laptopRect), Known(m_monitor2, m_displayName2, m_externalRect) },
+                { m_displayName1.id });
+            Assert::IsTrue(expected == actual);
+        }
+
+        TEST_METHOD (DoNotCheckDisplayNameWithoutLostDeviceId)
+        {
+            Assert::IsTrue(MonitorUtils::Display::GetDisplayNamesToCheck({ Monitor(m_monitor1, m_displayName1) }, { Known(m_monitor1, m_displayName1, m_laptopRect) }, {}).empty());
+        }
+
+        TEST_METHOD (DoNotCheckIdentifiedDisplayThatWasCheckedBefore)
+        {
+            Assert::IsTrue(MonitorUtils::Display::GetDisplayNamesToCheck({ Monitor(m_monitor1, m_laptopPanel) }, { Known(m_monitor1, m_laptopPanel, m_laptopRect) }, { m_displayName1.id }).empty());
+        }
+
+        TEST_METHOD (KeepDeviceIdOfSameMonitorHandleAndWorkAreaRect)
+        {
+            std::vector<FancyZonesDataTypes::MonitorId> monitors{ Monitor(m_monitor1, m_displayName1) };
+
+            Assert::IsTrue(MonitorUtils::Display::KeepDeviceIds(monitors, { m_displayName1.id }, { Known(m_monitor1, m_laptopPanel, m_laptopRect, L"serial-number") }, WorkAreaRects()));
+
+            AssertDeviceId(m_laptopPanel, monitors[0].deviceId);
+            Assert::AreEqual(std::wstring{ L"serial-number" }, monitors[0].serialNumber);
+            Assert::IsTrue(m_monitor1 == monitors[0].monitor);
+        }
+
+        TEST_METHOD (KeepDeviceIdWithTheDisplayNumberOfTheKnownMonitor)
+        {
+            // the known monitor was display 2 and the display without display device is display 1
+            auto laptopPanelOnDisplay2 = m_laptopPanel;
+            laptopPanelOnDisplay2.number = 2;
+            std::vector<FancyZonesDataTypes::MonitorId> monitors{ Monitor(m_monitor1, m_displayName1) };
+
+            Assert::IsTrue(MonitorUtils::Display::KeepDeviceIds(monitors, { m_displayName1.id }, { Known(m_monitor1, laptopPanelOnDisplay2, m_laptopRect) }, WorkAreaRects()));
+
+            AssertDeviceId(laptopPanelOnDisplay2, monitors[0].deviceId);
+        }
+
+        TEST_METHOD (KeepDeviceIdOfOneOfTwoDisplays)
+        {
+            std::vector<FancyZonesDataTypes::MonitorId> monitors{ Monitor(m_monitor1, m_laptopPanel), Monitor(m_monitor2, m_displayName2) };
+
+            Assert::IsTrue(MonitorUtils::Display::KeepDeviceIds(monitors, { m_displayName2.id }, { Known(m_monitor1, m_laptopPanel, m_laptopRect), Known(m_monitor2, m_externalMonitor, m_externalRect) }, WorkAreaRects()));
+
+            AssertDeviceId(m_laptopPanel, monitors[0].deviceId);
+            AssertDeviceId(m_externalMonitor, monitors[1].deviceId);
+        }
+
+        TEST_METHOD (KeepDeviceIdOfTheMonitorWithTheSameInstanceId)
+        {
+            // two monitors of one model differ in the instance id only
+            auto secondExternalMonitor = m_externalMonitor;
+            secondExternalMonitor.instanceId = L"4&117e8519&0&UID4166";
+            std::vector<FancyZonesDataTypes::MonitorId> monitors{ Monitor(m_monitor1, m_externalMonitor), Monitor(m_monitor2, m_displayName2) };
+
+            Assert::IsTrue(MonitorUtils::Display::KeepDeviceIds(monitors, { m_displayName2.id }, { Known(m_monitor1, m_externalMonitor, m_laptopRect), Known(m_monitor2, secondExternalMonitor, m_externalRect) }, WorkAreaRects()));
+
+            AssertDeviceId(secondExternalMonitor, monitors[1].deviceId);
+        }
+
+        TEST_METHOD (DoNotKeepDeviceIdOfAnotherMonitorHandle)
+        {
+            std::vector<FancyZonesDataTypes::MonitorId> monitors{ Monitor(m_monitor1, m_displayName1) };
+
+            Assert::IsFalse(MonitorUtils::Display::KeepDeviceIds(monitors, { m_displayName1.id }, { Known(m_monitor2, m_laptopPanel, m_laptopRect) }, WorkAreaRects()));
+
+            AssertDeviceId(m_displayName1, monitors[0].deviceId);
+        }
+
+        TEST_METHOD (DoNotKeepDeviceIdWhenWorkAreaRectChanged)
+        {
+            // the monitor handle of the external monitor is the handle of the laptop panel after the undock
+            std::vector<FancyZonesDataTypes::MonitorId> monitors{ Monitor(m_monitor1, m_displayName1) };
+
+            Assert::IsFalse(MonitorUtils::Display::KeepDeviceIds(monitors, { m_displayName1.id }, { Known(m_monitor1, m_externalMonitor, m_externalRect) }, WorkAreaRects()));
+
+            AssertDeviceId(m_displayName1, monitors[0].deviceId);
+        }
+
+        TEST_METHOD (KeepDeviceIdOfAnotherMonitorWithTheSameHandleAndWorkAreaRect)
+        {
+            // known limit: the handle and the work area rectangle are all that identifies a display without display device
+            std::vector<FancyZonesDataTypes::MonitorId> monitors{ Monitor(m_monitor1, m_displayName1) };
+
+            Assert::IsTrue(MonitorUtils::Display::KeepDeviceIds(monitors, { m_displayName1.id }, { Known(m_monitor1, m_externalMonitor, m_laptopRect) }, WorkAreaRects()));
+
+            AssertDeviceId(m_externalMonitor, monitors[0].deviceId);
+        }
+
+        TEST_METHOD (DoNotKeepDeviceIdWhenNumberOfMonitorsChanged)
+        {
+            std::vector<FancyZonesDataTypes::MonitorId> monitors{ Monitor(m_monitor1, m_displayName1) };
+
+            Assert::IsFalse(MonitorUtils::Display::KeepDeviceIds(monitors, { m_displayName1.id }, { Known(m_monitor1, m_laptopPanel, m_laptopRect), Known(m_monitor2, m_externalMonitor, m_externalRect) }, WorkAreaRects()));
+
+            AssertDeviceId(m_displayName1, monitors[0].deviceId);
+        }
+
+        TEST_METHOD (DoNotKeepDeviceIdForDisplayNameThatIsNotChecked)
+        {
+            std::vector<FancyZonesDataTypes::MonitorId> monitors{ Monitor(m_monitor1, m_displayName1) };
+
+            Assert::IsFalse(MonitorUtils::Display::KeepDeviceIds(monitors, {}, { Known(m_monitor1, m_laptopPanel, m_laptopRect) }, WorkAreaRects()));
+
+            AssertDeviceId(m_displayName1, monitors[0].deviceId);
+        }
+
+        TEST_METHOD (DoNotKeepDisplayName)
+        {
+            std::vector<FancyZonesDataTypes::MonitorId> monitors{ Monitor(m_monitor1, m_displayName1) };
+
+            Assert::IsFalse(MonitorUtils::Display::KeepDeviceIds(monitors, { m_displayName1.id }, { Known(m_monitor1, m_displayName2, m_laptopRect) }, WorkAreaRects()));
+
+            AssertDeviceId(m_displayName1, monitors[0].deviceId);
+        }
+
+        TEST_METHOD (DoNotKeepDeviceIdOfIdentifiedMonitor)
+        {
+            // the known monitor had the handle of the display without display device, and it is identified with another handle
+            auto laptopPanelOnDisplay2 = m_laptopPanel;
+            laptopPanelOnDisplay2.number = 2;
+            std::vector<FancyZonesDataTypes::MonitorId> monitors{ Monitor(m_monitor1, m_displayName1), Monitor(m_monitor2, laptopPanelOnDisplay2) };
+
+            Assert::IsFalse(MonitorUtils::Display::KeepDeviceIds(monitors, { m_displayName1.id }, { Known(m_monitor1, m_laptopPanel, m_laptopRect), Known(m_monitor2, m_externalMonitor, m_externalRect) }, WorkAreaRects()));
+
+            AssertDeviceId(m_displayName1, monitors[0].deviceId);
+            AssertDeviceId(laptopPanelOnDisplay2, monitors[1].deviceId);
+        }
+
+        TEST_METHOD (DoNotChangeIdentifiedMonitor)
+        {
+            std::vector<FancyZonesDataTypes::MonitorId> monitors{ Monitor(m_monitor1, m_externalMonitor, L"serial-number") };
+
+            Assert::IsFalse(MonitorUtils::Display::KeepDeviceIds(monitors, { m_displayName1.id }, { Known(m_monitor1, m_laptopPanel, m_laptopRect) }, WorkAreaRects()));
+
+            AssertDeviceId(m_externalMonitor, monitors[0].deviceId);
+            Assert::AreEqual(std::wstring{ L"serial-number" }, monitors[0].serialNumber);
         }
     };
 }
