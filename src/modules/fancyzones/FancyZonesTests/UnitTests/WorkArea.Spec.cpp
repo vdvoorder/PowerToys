@@ -11,6 +11,7 @@
 #include <FancyZonesLib/FancyZonesData/DefaultLayouts.h>
 #include <FancyZonesLib/FancyZonesWindowProperties.h>
 #include <FancyZonesLib/LayoutAssignedWindows.h>
+#include <FancyZonesLib/Settings.h>
 #include "Util.h"
 
 #include <common/utils/process_path.h>
@@ -472,6 +473,161 @@ namespace FancyZonesUnitTests
 
             const auto& layoutWindows = workArea->GetLayoutWindows();
             Assert::IsTrue(layoutWindows.GetZoneIndexSetFromWindow(window).empty());
+        }
+    };
+
+    TEST_CLASS (WorkAreaZonedWindowUnitTests)
+    {
+        HINSTANCE m_hInst{};
+        const HMONITOR m_monitor = Mocks::Monitor();
+        const FancyZonesUtils::Rect m_workAreaRect{ RECT(0, 0, 960, 540) };
+        const FancyZonesDataTypes::WorkAreaId m_parentUniqueId = {};
+        const FancyZonesDataTypes::WorkAreaId m_workAreaId = {
+            .monitorId = {
+                .monitor = m_monitor,
+                .deviceId = {
+                    .id = L"stamped-window-device-id",
+                    .instanceId = L"5&10a58c63&0&UID16777490",
+                    .number = 1,
+                },
+                .serialNumber = L"stamped-window-serial-number" },
+            .virtualDesktopId = FancyZonesUtils::GuidFromString(L"{011DC679-39FC-4ECF-ABAA-08FC4B5B7D39}").value()
+        };
+        const GUID m_layoutId = FancyZonesUtils::GuidFromString(L"{57895235-47E1-48A4-A2E7-2FF151F40564}").value();
+        AppliedLayouts::TAppliedLayoutsMap m_appliedLayouts{};
+        std::vector<HWND> m_windows{};
+
+        void ApplyGridLayout(int zoneCount)
+        {
+            LayoutData layout{
+                .uuid = m_layoutId,
+                .type = FancyZonesDataTypes::ZoneSetLayoutType::Grid,
+                .showSpacing = false,
+                .spacing = 0,
+                .zoneCount = zoneCount,
+                .sensitivityRadius = 20,
+            };
+            AppliedLayouts::instance().ApplyLayout(m_workAreaId, layout);
+        }
+
+        HWND CreateResizableWindow()
+        {
+            const auto window = Mocks::WindowCreate(m_hInst, L"", L"", 0, WS_THICKFRAME);
+            m_windows.push_back(window);
+
+            SetWindowPos(window, nullptr, 150, 150, 450, 550, SWP_SHOWWINDOW);
+            return window;
+        }
+
+        bool HasAppZoneHistory(HWND window)
+        {
+            return AppZoneHistory::instance().GetZoneHistory(get_process_path(window), m_workAreaId).has_value();
+        }
+
+        void UpdateWindowPositions(WorkArea& workArea)
+        {
+            workArea.UpdateWindowPositions();
+        }
+
+        TEST_METHOD_INITIALIZE(Init) noexcept
+        {
+            m_appliedLayouts = AppliedLayouts::instance().GetAppliedLayoutMap();
+
+            FancyZonesSettings::instance().SetSettings(Settings{});
+            std::filesystem::remove(AppZoneHistory::AppZoneHistoryFileName());
+            AppZoneHistory::instance().LoadData();
+        }
+
+        TEST_METHOD_CLEANUP(CleanUp) noexcept
+        {
+            for (const auto window : m_windows)
+            {
+                Mocks::WindowClose(window);
+            }
+
+            m_windows.clear();
+
+            AppliedLayouts::instance().SetAppliedLayouts(m_appliedLayouts);
+
+            FancyZonesSettings::instance().SetSettings(Settings{});
+            std::filesystem::remove(AppZoneHistory::AppZoneHistoryFileName());
+            AppZoneHistory::instance().LoadData();
+        }
+
+        TEST_METHOD (UpdateWindowPositionsDismissesClosedWindow)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            Assert::IsTrue(workArea->Snap(window, { 1 }, false));
+
+            Mocks::WindowClose(window);
+            Assert::IsFalse(IsWindow(window));
+            UpdateWindowPositions(*workArea);
+
+            Assert::IsTrue(workArea->GetLayoutWindows().SnappedWindows().empty());
+        }
+
+        TEST_METHOD (UpdateWindowPositionsDismissesClosedWindowWhenLayoutLostZone)
+        {
+            ApplyGridLayout(3);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            Assert::IsTrue(workArea->Snap(window, { 2 }, false));
+
+            Mocks::WindowClose(window);
+            Assert::IsFalse(IsWindow(window));
+            ApplyGridLayout(2);
+            workArea->InitLayout();
+            Assert::AreEqual(static_cast<size_t>(2), workArea->GetLayout()->Zones().size());
+            UpdateWindowPositions(*workArea);
+
+            Assert::IsTrue(workArea->GetLayoutWindows().SnappedWindows().empty());
+        }
+
+        TEST_METHOD (UpdateWindowPositionsMovesOtherWindowsWhenWindowIsClosed)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window1 = CreateResizableWindow();
+            const auto window2 = CreateResizableWindow();
+
+            // windows are positioned in the order of their handles, close the one that would be the first
+            const auto closedWindow = std::less<HWND>{}(window1, window2) ? window1 : window2;
+            const auto openWindow = closedWindow == window1 ? window2 : window1;
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(workArea->Snap(closedWindow, zones, false));
+            Assert::IsTrue(workArea->Snap(openWindow, zones, false));
+
+            Mocks::WindowClose(closedWindow);
+            Assert::IsFalse(IsWindow(closedWindow));
+            UpdateWindowPositions(*workArea);
+
+            const auto zoneRect = workArea->GetLayout()->Zones().at(1).GetZoneRect();
+            CustomAssert::AreEqual(zoneRect, Helpers::WaitForWindowRect(openWindow, zoneRect));
+            Assert::AreEqual(static_cast<size_t>(1), workArea->GetLayoutWindows().SnappedWindows().size());
+            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(openWindow));
+        }
+
+        TEST_METHOD (UpdateWindowPositionsMovesSnappedWindow)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(workArea->Snap(window, zones, false));
+            AppZoneHistory::instance().SetAppZoneHistory({});
+
+            UpdateWindowPositions(*workArea);
+
+            const auto zoneRect = workArea->GetLayout()->Zones().at(1).GetZoneRect();
+            CustomAssert::AreEqual(zoneRect, Helpers::WaitForWindowRect(window, zoneRect));
+            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+            Assert::IsTrue(HasAppZoneHistory(window));
         }
     };
 }

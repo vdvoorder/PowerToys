@@ -261,6 +261,13 @@ void WorkArea::UpdateWindowPositions()
     const auto& snappedWindows = m_layoutWindows.SnappedWindows();
     for (const auto& [window, zones] : snappedWindows)
     {
+        if (!IsWindow(window))
+        {
+            // The window was closed. Its app zone history is kept for the next window of the app.
+            m_layoutWindows.Dismiss(window);
+            continue;
+        }
+
         Snap(window, zones, true);
     }
 }
