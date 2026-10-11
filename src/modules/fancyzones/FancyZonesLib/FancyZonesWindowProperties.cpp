@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "FancyZonesWindowProperties.h"
 
+#include <FancyZonesLib/FancyZonesDataTypes.h>
 #include <FancyZonesLib/ZoneIndexSetBitmask.h>
 
 #include <common/logger/logger.h>
@@ -13,8 +14,36 @@ namespace ZonedWindowProperties
 {
     const wchar_t PropertyMultipleZone64ID[] = L"FancyZones_zones"; // maximum possible zone count = 64
     const wchar_t PropertyMultipleZone128ID[] = L"FancyZones_zones_max128"; // additional property to allow maximum possible zone count = 128
+    const wchar_t PropertyZoneIndexMonitorID[] = L"FancyZones_zones_monitor"; // monitor where the zone index property was stamped
 
     const wchar_t PropertySortKeyWithinZone[] = L"FancyZones_TabSortKeyWithinZone";
+}
+
+namespace
+{
+    // The value stays on the window while FancyZones is restarted or updated, so it can't come from std::hash.
+    // Only the device id is used: the handle, the instance id, the number and the serial number of a monitor
+    // can be different after it was connected again.
+    HANDLE MonitorPropertyValue(const FancyZonesDataTypes::MonitorId& monitorId) noexcept
+    {
+        constexpr uint64_t fnvOffset = 14695981039346656037ull;
+        constexpr uint64_t fnvPrime = 1099511628211ull;
+
+        uint64_t hash = fnvOffset;
+        for (const wchar_t ch : monitorId.deviceId.id)
+        {
+            hash ^= ch;
+            hash *= fnvPrime;
+        }
+
+        if (hash == 0)
+        {
+            hash = 1; // GetProp returns null for a window without the property
+        }
+
+        static_assert(sizeof(HANDLE) == sizeof(uint64_t));
+        return reinterpret_cast<HANDLE>(hash);
+    }
 }
 
 bool FancyZonesWindowProperties::StampZoneIndexProperty(HWND window, const ZoneIndexSet& zoneSet)
@@ -63,6 +92,7 @@ void FancyZonesWindowProperties::RemoveZoneIndexProperty(HWND window)
 {
     ::RemoveProp(window, ZonedWindowProperties::PropertyMultipleZone64ID);
     ::RemoveProp(window, ZonedWindowProperties::PropertyMultipleZone128ID);
+    ::RemoveProp(window, ZonedWindowProperties::PropertyZoneIndexMonitorID);
 }
 
 ZoneIndexSet FancyZonesWindowProperties::RetrieveZoneIndexProperty(HWND window)
@@ -87,6 +117,20 @@ ZoneIndexSet FancyZonesWindowProperties::RetrieveZoneIndexProperty(HWND window)
     }
 
     return bitmask.ToIndexSet();
+}
+
+void FancyZonesWindowProperties::StampZoneIndexMonitorProperty(HWND window, const FancyZonesDataTypes::MonitorId& monitorId)
+{
+    if (!SetProp(window, ZonedWindowProperties::PropertyZoneIndexMonitorID, MonitorPropertyValue(monitorId)))
+    {
+        Logger::error(L"Failed to stamp window {}", get_last_error_or_default(GetLastError()));
+    }
+}
+
+bool FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(HWND window, const FancyZonesDataTypes::MonitorId& monitorId)
+{
+    const HANDLE value = ::GetProp(window, ZonedWindowProperties::PropertyZoneIndexMonitorID);
+    return value && value != MonitorPropertyValue(monitorId);
 }
 
 void FancyZonesWindowProperties::StampMovedOnOpeningProperty(HWND window)

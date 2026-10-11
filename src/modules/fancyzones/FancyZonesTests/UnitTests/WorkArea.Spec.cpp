@@ -494,6 +494,15 @@ namespace FancyZonesUnitTests
                 .serialNumber = L"stamped-window-serial-number" },
             .virtualDesktopId = FancyZonesUtils::GuidFromString(L"{011DC679-39FC-4ECF-ABAA-08FC4B5B7D39}").value()
         };
+        const FancyZonesDataTypes::MonitorId m_otherMonitorId = {
+            .monitor = Mocks::Monitor(),
+            .deviceId = {
+                .id = L"stamped-window-other-device-id",
+                .instanceId = L"5&10a58c63&0&UID16777496",
+                .number = 2,
+            },
+            .serialNumber = L"stamped-window-other-serial-number"
+        };
         const GUID m_layoutId = FancyZonesUtils::GuidFromString(L"{57895235-47E1-48A4-A2E7-2FF151F40564}").value();
         AppliedLayouts::TAppliedLayoutsMap m_appliedLayouts{};
         std::vector<HWND> m_windows{};
@@ -523,6 +532,12 @@ namespace FancyZonesUnitTests
         bool HasAppZoneHistory(HWND window)
         {
             return AppZoneHistory::instance().GetZoneHistory(get_process_path(window), m_workAreaId).has_value();
+        }
+
+        HANDLE MonitorOfZoneIndexProperty(HWND window)
+        {
+            // the name stays on the windows while FancyZones is updated, so it's repeated here and not taken from the library
+            return GetPropW(window, L"FancyZones_zones_monitor");
         }
 
         void UpdateWindowPositions(WorkArea& workArea)
@@ -671,6 +686,138 @@ namespace FancyZonesUnitTests
                 ShowWindow(window, SW_RESTORE);
                 CustomAssert::AreEqual(zoneRect, Helpers::WaitForWindowRect(window, zoneRect));
             }
+        }
+
+        TEST_METHOD (SnapSavesMonitorOfZoneIndexProperty)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            Assert::IsTrue(workArea->Snap(window, { 1 }, false));
+
+            Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_workAreaId.monitorId));
+            Assert::IsTrue(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_otherMonitorId));
+        }
+
+        TEST_METHOD (MonitorOfZoneIndexPropertyIsDeviceId)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            Assert::IsTrue(workArea->Snap(window, { 1 }, false));
+
+            // the same device with another handle, instance id, number and serial number is the same monitor
+            auto sameDeviceId = m_otherMonitorId;
+            sameDeviceId.deviceId.id = m_workAreaId.monitorId.deviceId.id;
+            Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, sameDeviceId));
+
+            // another device with the same handle, instance id, number and serial number is another monitor
+            auto otherDeviceId = m_workAreaId.monitorId;
+            otherDeviceId.deviceId.id = m_otherMonitorId.deviceId.id;
+            Assert::IsTrue(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, otherDeviceId));
+        }
+
+        TEST_METHOD (MonitorOfZoneIndexPropertyHasFixedValue)
+        {
+            const auto window = CreateResizableWindow();
+            const FancyZonesDataTypes::MonitorId monitorId = { .deviceId = { .id = L"GSM1388" } };
+
+            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window, monitorId);
+
+            // the value stays on the windows while FancyZones is updated, so it has to be the same in every version
+            Assert::AreEqual(0xC55652918BF74D72ull, reinterpret_cast<uint64_t>(MonitorOfZoneIndexProperty(window)));
+
+            // a device id with a character above 0xFF
+            const FancyZonesDataTypes::MonitorId highCharacterMonitorId = { .deviceId = { .id = L"GSM\u01388" } };
+            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window, highCharacterMonitorId);
+            Assert::AreEqual(0xAB21E08A1FA46FC6ull, reinterpret_cast<uint64_t>(MonitorOfZoneIndexProperty(window)));
+
+            // the hash of this device id is 0, and 1 is saved in its place
+            const FancyZonesDataTypes::MonitorId zeroHashMonitorId = { .deviceId = { .id = std::wstring{ 0xD5, 0x6B, 0xB9, 0x53, 0x42, 0x87, 0x08, 0x36 } } };
+            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window, zeroHashMonitorId);
+            Assert::AreEqual(1ull, reinterpret_cast<uint64_t>(MonitorOfZoneIndexProperty(window)));
+        }
+
+        TEST_METHOD (UnsnapRemovesMonitorOfZoneIndexProperty)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            Assert::IsTrue(workArea->Snap(window, { 1 }, false));
+            Assert::IsNotNull(MonitorOfZoneIndexProperty(window));
+
+            Assert::IsTrue(workArea->Unsnap(window));
+
+            Assert::IsNull(MonitorOfZoneIndexProperty(window));
+        }
+
+        TEST_METHOD (StampZoneIndexPropertyRemovesMonitor)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(workArea->Snap(window, zones, false));
+            Assert::IsNotNull(MonitorOfZoneIndexProperty(window));
+
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
+
+            Assert::IsNull(MonitorOfZoneIndexProperty(window));
+        }
+
+        TEST_METHOD (SnapWithSameZonesAddsNoMonitor)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
+
+            // a zone index property that was saved without the monitor isn't from another monitor, whatever the monitor is
+            Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_workAreaId.monitorId));
+            Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_otherMonitorId));
+
+            Assert::IsTrue(workArea->Snap(window, zones, false));
+
+            Assert::IsNull(MonitorOfZoneIndexProperty(window));
+            Assert::IsTrue(zones == FancyZonesWindowProperties::RetrieveZoneIndexProperty(window));
+        }
+
+        TEST_METHOD (SnapWithOtherZonesSavesMonitor)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, { 1 }));
+
+            Assert::IsTrue(workArea->Snap(window, { 2 }, false));
+
+            Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_workAreaId.monitorId));
+            Assert::IsTrue(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_otherMonitorId));
+        }
+
+        TEST_METHOD (SnapWithSameZonesFromAnotherMonitorSavesMonitor)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
+            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window, m_otherMonitorId);
+            Assert::IsTrue(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_workAreaId.monitorId));
+
+            Assert::IsTrue(workArea->Snap(window, zones, false));
+
+            Assert::IsFalse(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_workAreaId.monitorId));
+            Assert::IsTrue(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_otherMonitorId));
+            Assert::IsTrue(zones == FancyZonesWindowProperties::RetrieveZoneIndexProperty(window));
         }
     };
 

@@ -4,6 +4,11 @@
 
 #include <FancyZonesLib/Zone.h>
 
+namespace FancyZonesDataTypes
+{
+    struct MonitorId;
+}
+
 // Zoned window properties are not localized.
 namespace ZonedWindowProperties
 {
@@ -21,6 +26,10 @@ namespace FancyZonesWindowProperties
     bool StampZoneIndexProperty(HWND window, const ZoneIndexSet& zoneSet);
     void RemoveZoneIndexProperty(HWND window);
     ZoneIndexSet RetrieveZoneIndexProperty(HWND window);
+
+    // The monitor where the zone index property was stamped. It's removed together with the zone index property.
+    void StampZoneIndexMonitorProperty(HWND window, const FancyZonesDataTypes::MonitorId& monitorId);
+    bool IsZoneIndexPropertyFromAnotherMonitor(HWND window, const FancyZonesDataTypes::MonitorId& monitorId);
 
     void StampMovedOnOpeningProperty(HWND window);
     bool RetrieveMovedOnOpeningProperty(HWND window);

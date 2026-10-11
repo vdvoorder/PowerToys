@@ -139,7 +139,21 @@ bool WorkArea::Snap(HWND window, const ZoneIndexSet& zones, bool updatePosition)
         MoveWindowToZones(window, zones, true);
     }
 
-    return FancyZonesWindowProperties::StampZoneIndexProperty(window, zones);
+    // A window that is snapped to the zones it already has on this monitor keeps its zone index property as it is.
+    // A property that was saved without the monitor gets no monitor this way.
+    if (FancyZonesWindowProperties::RetrieveZoneIndexProperty(window) == zones &&
+        !FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_uniqueId.monitorId))
+    {
+        return true;
+    }
+
+    if (!FancyZonesWindowProperties::StampZoneIndexProperty(window, zones))
+    {
+        return false;
+    }
+
+    FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window, m_uniqueId.monitorId);
+    return true;
 }
 
 bool WorkArea::Unsnap(HWND window)
