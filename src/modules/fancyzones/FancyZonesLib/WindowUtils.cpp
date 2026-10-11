@@ -210,13 +210,13 @@ void FancyZonesWindowUtils::SwitchToWindow(HWND window) noexcept
     }
 }
 
-void FancyZonesWindowUtils::SizeWindowToRect(HWND window, RECT rect, BOOL snapZone) noexcept
+void FancyZonesWindowUtils::SizeWindowToRect(HWND window, RECT rect, BOOL snapZone, IfMinimized ifMinimized) noexcept
 {
     WINDOWPLACEMENT placement{};
     ::GetWindowPlacement(window, &placement);
 
     // Wait if SW_SHOWMINIMIZED would be removed from window (Issue #1685)
-    for (int i = 0; i < 5 && (placement.showCmd == SW_SHOWMINIMIZED); ++i)
+    for (int i = 0; ifMinimized == IfMinimized::Wait && i < 5 && (placement.showCmd == SW_SHOWMINIMIZED); ++i)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         ::GetWindowPlacement(window, &placement);

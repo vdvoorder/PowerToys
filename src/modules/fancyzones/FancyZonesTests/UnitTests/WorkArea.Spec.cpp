@@ -629,5 +629,47 @@ namespace FancyZonesUnitTests
             Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
             Assert::IsTrue(HasAppZoneHistory(window));
         }
+
+        TEST_METHOD (UpdateWindowPositionsDoesNotWaitForMinimizedWindows)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+
+            const ZoneIndexSet zones = { 1 };
+            const std::vector<HWND> windows = {
+                CreateResizableWindow(), CreateResizableWindow(), CreateResizableWindow(),
+                CreateResizableWindow(), CreateResizableWindow(), CreateResizableWindow()
+            };
+            for (const auto window : windows)
+            {
+                Assert::IsTrue(workArea->Snap(window, zones, false));
+                ShowWindow(window, SW_SHOWMINNOACTIVE);
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            for (const auto window : windows)
+            {
+                Assert::IsTrue(IsIconic(window));
+            }
+
+            const auto start = std::chrono::steady_clock::now();
+            UpdateWindowPositions(*workArea);
+            const auto duration = std::chrono::steady_clock::now() - start;
+
+            // a wait of 0.5 seconds for each of the minimized windows would take 3 seconds
+            Assert::IsTrue(duration < std::chrono::seconds(2));
+
+            // windows are positioned asynchronously, wait to see a window that isn't minimized anymore
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+            const auto zoneRect = workArea->GetLayout()->Zones().at(1).GetZoneRect();
+            for (const auto window : windows)
+            {
+                Assert::IsTrue(IsIconic(window));
+
+                ShowWindow(window, SW_RESTORE);
+                CustomAssert::AreEqual(zoneRect, Helpers::WaitForWindowRect(window, zoneRect));
+            }
+        }
     };
 }

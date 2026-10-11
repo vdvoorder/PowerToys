@@ -72,7 +72,7 @@ private:
     void SetWorkAreaWindowAsTopmost(HWND draggedWindow) noexcept;
 
     bool AreZonesInLayout(const ZoneIndexSet& zones) const noexcept;
-    void MoveWindowToZones(HWND window, const ZoneIndexSet& zones);
+    void MoveWindowToZones(HWND window, const ZoneIndexSet& zones, bool waitIfMinimized);
 
     LRESULT WndProc(UINT message, WPARAM wparam, LPARAM lparam) noexcept;
     

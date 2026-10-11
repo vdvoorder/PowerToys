@@ -30,8 +30,14 @@ namespace FancyZonesWindowUtils
     bool IsExcludedByUser(const HWND& hwnd, const std::wstring& processPath) noexcept;
     bool IsExcludedByDefault(const HWND& hwnd, const std::wstring& processPath) noexcept;
 
+    enum class IfMinimized
+    {
+        Wait,
+        DoNotWait
+    };
+
     void SwitchToWindow(HWND window) noexcept;
-    void SizeWindowToRect(HWND window, RECT rect, BOOL snapZone = true) noexcept; // Parameter rect must be in screen coordinates (e.g. obtained from GetWindowRect)
+    void SizeWindowToRect(HWND window, RECT rect, BOOL snapZone = true, IfMinimized ifMinimized = IfMinimized::Wait) noexcept; // Parameter rect must be in screen coordinates (e.g. obtained from GetWindowRect)
     void SaveWindowSizeAndOrigin(HWND window) noexcept;
     void RestoreWindowSize(HWND window) noexcept;
     void RestoreWindowOrigin(HWND window) noexcept;

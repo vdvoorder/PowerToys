@@ -136,7 +136,7 @@ bool WorkArea::Snap(HWND window, const ZoneIndexSet& zones, bool updatePosition)
 
     if (updatePosition)
     {
-        MoveWindowToZones(window, zones);
+        MoveWindowToZones(window, zones, true);
     }
 
     return FancyZonesWindowProperties::StampZoneIndexProperty(window, zones);
@@ -257,7 +257,12 @@ void WorkArea::UpdateWindowPositions()
             continue;
         }
 
-        Snap(window, zones, true);
+        if (AreZonesInLayout(zones))
+        {
+            // a minimized window stays minimized and gets its new position without the wait
+            Snap(window, zones, false);
+            MoveWindowToZones(window, zones, false);
+        }
     }
 }
 
@@ -420,12 +425,13 @@ bool WorkArea::AreZonesInLayout(const ZoneIndexSet& zones) const noexcept
     return true;
 }
 
-void WorkArea::MoveWindowToZones(HWND window, const ZoneIndexSet& zones)
+void WorkArea::MoveWindowToZones(HWND window, const ZoneIndexSet& zones, bool waitIfMinimized)
 {
     const auto rect = m_layout->GetCombinedZonesRect(zones);
     const auto adjustedRect = FancyZonesWindowUtils::AdjustRectForSizeWindowToRect(window, rect, m_window);
     FancyZonesWindowUtils::SaveWindowSizeAndOrigin(window);
-    FancyZonesWindowUtils::SizeWindowToRect(window, adjustedRect);
+    const auto ifMinimized = waitIfMinimized ? FancyZonesWindowUtils::IfMinimized::Wait : FancyZonesWindowUtils::IfMinimized::DoNotWait;
+    FancyZonesWindowUtils::SizeWindowToRect(window, adjustedRect, true, ifMinimized);
 }
 
 #pragma endregion
