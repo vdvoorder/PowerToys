@@ -907,6 +907,49 @@ namespace FancyZonesUnitTests
             Assert::IsTrue(AssignedZones(window, 1).empty());
         }
 
+        TEST_METHOD (UpdateStampedWindowsAppZoneHistoryOnSeveralWorkAreas)
+        {
+            const auto window = CreateStampedWindow(m_zones);
+            SaveAppZoneHistory(window, 0, m_zones);
+            SaveAppZoneHistory(window, 1, m_zones);
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = Mocks::Monitor() } }, false);
+
+            // the window is snapped on one work area only
+            Assert::IsTrue(AssignedZones(window, 0).empty() != AssignedZones(window, 1).empty());
+        }
+
+        TEST_METHOD (UpdateStampedWindowsAlreadyAssignedWindow)
+        {
+            const auto window = CreateStampedWindow(m_zones);
+            Assert::IsTrue(m_workAreaConfiguration.GetWorkArea(m_monitors[0])->Snap(window, m_zones, false));
+            SaveAppZoneHistory(window, 1, m_zones);
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[1] } }, false);
+
+            Assert::IsTrue(m_zones == AssignedZones(window, 0));
+            Assert::IsTrue(AssignedZones(window, 1).empty());
+        }
+
+        TEST_METHOD (UpdateStampedWindowsKeepsOrderOfAssignedWindows)
+        {
+            const auto workArea = m_workAreaConfiguration.GetWorkArea(m_monitors[0]);
+            const auto window1 = CreateStampedWindow(m_zones);
+            const auto window2 = CreateStampedWindow(m_zones);
+            Assert::IsTrue(workArea->Snap(window1, m_zones, false));
+            Assert::IsTrue(workArea->Snap(window2, m_zones, false));
+
+            const auto sortKey = FancyZonesWindowProperties::GetTabSortKeyWithinZone(window1);
+            Assert::IsTrue(sortKey.has_value());
+
+            const std::vector<StampedWindow> windows = { StampedWindow{ .window = window1, .zones = m_zones, .monitor = m_monitors[0] },
+                                                         StampedWindow{ .window = window2, .zones = m_zones, .monitor = m_monitors[0] } };
+            m_workAreaConfiguration.UpdateStampedWindows(windows, false);
+
+            // snapping the window again would move it to the end of its zone
+            Assert::IsTrue(sortKey == FancyZonesWindowProperties::GetTabSortKeyWithinZone(window1));
+        }
+
         TEST_METHOD (UpdateStampedWindowsWindowOutsideOfMonitors)
         {
             const auto window = CreateStampedWindow(m_zones);

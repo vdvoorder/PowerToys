@@ -71,5 +71,7 @@ public:
     void Clear() noexcept;
     
 private:
+    bool IsWindowAssigned(HWND window) const;
+
     std::unordered_map<HMONITOR, std::unique_ptr<WorkArea>> m_workAreaMap;
 };

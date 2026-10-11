@@ -78,6 +78,11 @@ void WorkAreaConfiguration::UpdateStampedWindows(const std::vector<StampedWindow
         std::vector<StampedWindow> windowsToSnap{};
         for (const auto& stampedWindow : windows)
         {
+            if (IsWindowAssigned(stampedWindow.window))
+            {
+                continue;
+            }
+
             const auto workAreaForMonitor = GetWorkArea(stampedWindow.monitor);
             if (workAreaForMonitor && AppZoneHistory::instance().GetAppLastZoneIndexSet(stampedWindow.window, workAreaForMonitor->UniqueId(), workAreaForMonitor->GetLayoutId()) == stampedWindow.zones)
             {
@@ -98,6 +103,11 @@ void WorkAreaConfiguration::UpdateStampedWindows(const std::vector<StampedWindow
                 if (savedIndexes == stampedWindow.zones)
                 {
                     workArea->Snap(stampedWindow.window, stampedWindow.zones, false);
+                    if (IsWindowAssigned(stampedWindow.window))
+                    {
+                        // one work area only, so that the window isn't in the lists of several monitors
+                        break;
+                    }
                 }
             }
         }
@@ -118,4 +128,17 @@ void WorkAreaConfiguration::UpdateStampedWindows(const std::vector<StampedWindow
 void WorkAreaConfiguration::Clear() noexcept
 {
     m_workAreaMap.clear();
+}
+
+bool WorkAreaConfiguration::IsWindowAssigned(HWND window) const
+{
+    for (const auto& [_, workArea] : m_workAreaMap)
+    {
+        if (workArea && !workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window).empty())
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
