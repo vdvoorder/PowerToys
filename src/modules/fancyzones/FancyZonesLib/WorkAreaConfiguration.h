@@ -10,6 +10,7 @@ struct StampedWindow
     HWND window{};
     ZoneIndexSet zones{};
     HMONITOR monitor{}; // Monitor where the window is placed, null if the window isn't placed on any monitor.
+    HMONITOR nearestMonitor{}; // Monitor that is nearest to the window, set only if the window isn't placed on any monitor.
 };
 
 class WorkAreaConfiguration
@@ -57,13 +58,17 @@ public:
     void AddWorkArea(HMONITOR monitor, std::unique_ptr<WorkArea> workArea);
 
     /**
-     * Snap the windows with the zone index property on the work areas where the app zone history
-     * has the same zones for them, and update the positions of the snapped windows.
+     * Update the windows with the zone index property after a display, work area, virtual desktop or layout change.
+     * A window is snapped on the work area where the app zone history has the same zones for it, the monitor
+     * where the window is placed is checked first. A window without such history is assigned on the monitor
+     * where it's placed, by its zone index property and without saving app zone history.
      *
-     * @param[in]  windows           Windows with the zone index property.
-     * @param[in]  updatePositions   Whether the windows are moved to their zones.
+     * @param[in]  windows               Windows with the zone index property.
+     * @param[in]  checkOtherWorkAreas   Whether the app zone history is also checked on the work areas of
+     *                                   the monitors where the window isn't placed.
+     * @param[in]  updatePositions       Whether the windows are moved to their zones.
      */
-    void UpdateStampedWindows(const std::vector<StampedWindow>& windows, bool updatePositions);
+    void UpdateStampedWindows(const std::vector<StampedWindow>& windows, bool checkOtherWorkAreas, bool updatePositions);
 
     /**
      * Clear all persisted work area related data.
@@ -71,6 +76,7 @@ public:
     void Clear() noexcept;
     
 private:
+    void AssignStampedWindows(const std::vector<StampedWindow>& windows, bool checkOtherWorkAreas);
     bool IsWindowAssigned(HWND window) const;
 
     std::unordered_map<HMONITOR, std::unique_ptr<WorkArea>> m_workAreaMap;

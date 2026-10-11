@@ -520,6 +520,19 @@ namespace FancyZonesUnitTests
             AppliedLayouts::instance().ApplyLayout(m_workAreaId, layout);
         }
 
+        void ApplyBlankLayout()
+        {
+            LayoutData layout{
+                .uuid = GUID_NULL,
+                .type = FancyZonesDataTypes::ZoneSetLayoutType::Blank,
+                .showSpacing = false,
+                .spacing = 0,
+                .zoneCount = 0,
+                .sensitivityRadius = 20,
+            };
+            AppliedLayouts::instance().ApplyLayout(m_workAreaId, layout);
+        }
+
         HWND CreateResizableWindow()
         {
             const auto window = Mocks::WindowCreate(m_hInst, L"", L"", 0, WS_THICKFRAME);
@@ -527,6 +540,16 @@ namespace FancyZonesUnitTests
 
             SetWindowPos(window, nullptr, 150, 150, 450, 550, SWP_SHOWWINDOW);
             return window;
+        }
+
+        RECT WindowRect(HWND window)
+        {
+            // windows are moved asynchronously, wait to see a move that isn't expected
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+            RECT rect{};
+            GetWindowRect(window, &rect);
+            return rect;
         }
 
         bool HasAppZoneHistory(HWND window)
@@ -819,6 +842,261 @@ namespace FancyZonesUnitTests
             Assert::IsTrue(FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_otherMonitorId));
             Assert::IsTrue(zones == FancyZonesWindowProperties::RetrieveZoneIndexProperty(window));
         }
+
+        TEST_METHOD (AssignStampedWindow)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            RECT rect{};
+            GetWindowRect(window, &rect);
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
+
+            Assert::IsTrue(workArea->AssignStampedWindow(window, zones));
+
+            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+            Assert::IsTrue(zones == FancyZonesWindowProperties::RetrieveZoneIndexProperty(window));
+            Assert::IsNull(MonitorOfZoneIndexProperty(window));
+            Assert::IsFalse(HasAppZoneHistory(window));
+            CustomAssert::AreEqual(rect, WindowRect(window));
+        }
+
+        TEST_METHOD (AssignStampedWindowToIncorrectZone)
+        {
+            ApplyGridLayout(2);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet zones = { 2 };
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
+
+            Assert::IsFalse(workArea->AssignStampedWindow(window, zones));
+            Assert::IsFalse(workArea->AssignStampedWindow(window, {}));
+
+            Assert::IsTrue(workArea->GetLayoutWindows().SnappedWindows().empty());
+            Assert::IsTrue(zones == FancyZonesWindowProperties::RetrieveZoneIndexProperty(window));
+        }
+
+        TEST_METHOD (AssignStampedWindowFromAnotherMonitor)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
+            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window, m_otherMonitorId);
+
+            Assert::IsFalse(workArea->AssignStampedWindow(window, zones));
+
+            Assert::IsTrue(workArea->GetLayoutWindows().SnappedWindows().empty());
+
+            // the same zones are assigned when they were saved on the monitor of the work area
+            FancyZonesWindowProperties::StampZoneIndexMonitorProperty(window, m_workAreaId.monitorId);
+
+            Assert::IsTrue(workArea->AssignStampedWindow(window, zones));
+
+            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+        }
+
+        TEST_METHOD (AssignStampedWindowAgainKeepsOrderInZone)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window1 = CreateResizableWindow();
+            const auto window2 = CreateResizableWindow();
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window1, zones));
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window2, zones));
+            Assert::IsTrue(workArea->AssignStampedWindow(window1, zones));
+            Assert::IsTrue(workArea->AssignStampedWindow(window2, zones));
+
+            const auto sortKey = FancyZonesWindowProperties::GetTabSortKeyWithinZone(window1);
+            Assert::IsTrue(sortKey.has_value());
+
+            Assert::IsTrue(workArea->AssignStampedWindow(window1, zones));
+
+            // the window list isn't changed: LayoutAssignedWindows::Assign would move the window to the end of its zone
+            Assert::IsTrue(sortKey == FancyZonesWindowProperties::GetTabSortKeyWithinZone(window1));
+        }
+
+        TEST_METHOD (SnapAfterAssignStampedWindow)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
+            Assert::IsTrue(workArea->AssignStampedWindow(window, zones));
+
+            Assert::IsTrue(workArea->Snap(window, zones, false));
+
+            // the window is a snapped window from now on, its app zone history is saved again
+            AppZoneHistory::instance().SetAppZoneHistory({});
+            UpdateWindowPositions(*workArea);
+
+            Assert::IsTrue(HasAppZoneHistory(window));
+        }
+
+        TEST_METHOD (UnsnapAfterAssignStampedWindow)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
+            Assert::IsTrue(workArea->AssignStampedWindow(window, zones));
+            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+
+            Assert::IsTrue(workArea->Unsnap(window));
+
+            Assert::IsTrue(workArea->GetLayoutWindows().SnappedWindows().empty());
+            Assert::IsTrue(FancyZonesWindowProperties::RetrieveZoneIndexProperty(window).empty());
+        }
+
+        TEST_METHOD (DismissStampedWindow)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto stampedWindow = CreateResizableWindow();
+            const auto snappedWindow = CreateResizableWindow();
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(stampedWindow, zones));
+            Assert::IsTrue(workArea->AssignStampedWindow(stampedWindow, zones));
+            Assert::IsTrue(workArea->Snap(snappedWindow, zones, false));
+
+            workArea->DismissStampedWindow(stampedWindow);
+            workArea->DismissStampedWindow(snappedWindow);
+
+            Assert::IsTrue(workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(stampedWindow).empty());
+            Assert::IsTrue(zones == FancyZonesWindowProperties::RetrieveZoneIndexProperty(stampedWindow));
+            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(snappedWindow));
+        }
+
+        TEST_METHOD (UpdateWindowPositionsMovesStampedWindow)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
+            Assert::IsTrue(workArea->AssignStampedWindow(window, zones));
+
+            UpdateWindowPositions(*workArea);
+
+            const auto zoneRect = workArea->GetLayout()->Zones().at(1).GetZoneRect();
+            CustomAssert::AreEqual(zoneRect, Helpers::WaitForWindowRect(window, zoneRect));
+            Assert::IsTrue(zones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
+            Assert::IsTrue(zones == FancyZonesWindowProperties::RetrieveZoneIndexProperty(window));
+            Assert::IsFalse(HasAppZoneHistory(window));
+        }
+
+        TEST_METHOD (UpdateWindowPositionsDismissesClosedStampedWindow)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
+            Assert::IsTrue(workArea->AssignStampedWindow(window, zones));
+
+            Mocks::WindowClose(window);
+            Assert::IsFalse(IsWindow(window));
+            UpdateWindowPositions(*workArea);
+
+            Assert::IsTrue(workArea->GetLayoutWindows().SnappedWindows().empty());
+        }
+
+        TEST_METHOD (UpdateWindowPositionsDismissesStampedWindowWithoutZoneIndexProperty)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            RECT rect{};
+            GetWindowRect(window, &rect);
+
+            const ZoneIndexSet zones = { 1 };
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
+            Assert::IsTrue(workArea->AssignStampedWindow(window, zones));
+
+            FancyZonesWindowProperties::RemoveZoneIndexProperty(window);
+            UpdateWindowPositions(*workArea);
+
+            Assert::IsTrue(workArea->GetLayoutWindows().SnappedWindows().empty());
+            CustomAssert::AreEqual(rect, WindowRect(window));
+        }
+
+        TEST_METHOD (UpdateWindowPositionsDismissesStampedWindowWhenLayoutLostZone)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto window = CreateResizableWindow();
+
+            RECT rect{};
+            GetWindowRect(window, &rect);
+
+            const ZoneIndexSet zones = { 3 };
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
+            Assert::IsTrue(workArea->AssignStampedWindow(window, zones));
+
+            ApplyGridLayout(2);
+            workArea->InitLayout();
+            Assert::AreEqual(static_cast<size_t>(2), workArea->GetLayout()->Zones().size());
+            UpdateWindowPositions(*workArea);
+
+            Assert::IsTrue(workArea->GetLayoutWindows().SnappedWindows().empty());
+            Assert::IsTrue(zones == FancyZonesWindowProperties::RetrieveZoneIndexProperty(window));
+            CustomAssert::AreEqual(rect, WindowRect(window));
+        }
+
+        TEST_METHOD (UpdateWindowPositionsKeepsWindowsWhenLayoutHasNoZones)
+        {
+            ApplyGridLayout(4);
+            const auto workArea = WorkArea::Create(m_hInst, m_workAreaId, m_parentUniqueId, m_workAreaRect);
+            const auto snappedWindow = CreateResizableWindow();
+            const auto stampedWindow = CreateResizableWindow();
+
+            RECT snappedWindowRect{};
+            GetWindowRect(snappedWindow, &snappedWindowRect);
+            RECT stampedWindowRect{};
+            GetWindowRect(stampedWindow, &stampedWindowRect);
+
+            const ZoneIndexSet snappedZones = { 0 };
+            const ZoneIndexSet stampedZones = { 1 };
+            Assert::IsTrue(workArea->Snap(snappedWindow, snappedZones, false));
+            Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(stampedWindow, stampedZones));
+            Assert::IsTrue(workArea->AssignStampedWindow(stampedWindow, stampedZones));
+
+            ApplyBlankLayout();
+            workArea->InitLayout();
+            Assert::IsTrue(workArea->GetLayout()->Zones().empty());
+            UpdateWindowPositions(*workArea);
+
+            Assert::IsTrue(snappedZones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(snappedWindow));
+            Assert::IsTrue(stampedZones == workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(stampedWindow));
+            CustomAssert::AreEqual(snappedWindowRect, WindowRect(snappedWindow));
+            CustomAssert::AreEqual(stampedWindowRect, WindowRect(stampedWindow));
+
+            // the windows are placed again by the next layout that has zones
+            ApplyGridLayout(4);
+            workArea->InitLayout();
+            UpdateWindowPositions(*workArea);
+
+            const auto snappedZoneRect = workArea->GetLayout()->Zones().at(0).GetZoneRect();
+            const auto stampedZoneRect = workArea->GetLayout()->Zones().at(1).GetZoneRect();
+            CustomAssert::AreEqual(snappedZoneRect, Helpers::WaitForWindowRect(snappedWindow, snappedZoneRect));
+            CustomAssert::AreEqual(stampedZoneRect, Helpers::WaitForWindowRect(stampedWindow, stampedZoneRect));
+        }
     };
 
     TEST_CLASS (WorkAreaConfigurationUnitTests)
@@ -869,6 +1147,19 @@ namespace FancyZonesUnitTests
             AppliedLayouts::instance().ApplyLayout(workAreaId, layout);
         }
 
+        void ApplyBlankLayout(const FancyZonesDataTypes::WorkAreaId& workAreaId)
+        {
+            LayoutData layout{
+                .uuid = GUID_NULL,
+                .type = FancyZonesDataTypes::ZoneSetLayoutType::Blank,
+                .showSpacing = false,
+                .spacing = 0,
+                .zoneCount = 0,
+                .sensitivityRadius = 20,
+            };
+            AppliedLayouts::instance().ApplyLayout(workAreaId, layout);
+        }
+
         void AddWorkArea(WorkAreaConfiguration& workAreaConfiguration, HMONITOR monitor, const FancyZonesDataTypes::WorkAreaId& workAreaId)
         {
             ApplyGridLayout(workAreaId, 4);
@@ -876,14 +1167,19 @@ namespace FancyZonesUnitTests
             workAreaConfiguration.AddWorkArea(monitor, WorkArea::Create(m_hInst, workAreaId, {}, m_workAreaRect));
         }
 
-        HWND CreateStampedWindow(const ZoneIndexSet& zones)
+        HWND CreateStampedWindow(const ZoneIndexSet& zones, const std::wstring& title)
         {
-            const auto window = Mocks::WindowCreate(m_hInst, L"", L"", 0, WS_THICKFRAME);
+            const auto window = Mocks::WindowCreate(m_hInst, title, L"", 0, WS_THICKFRAME);
             m_windows.push_back(window);
 
             SetWindowPos(window, nullptr, 150, 150, 450, 550, SWP_SHOWWINDOW);
             Assert::IsTrue(FancyZonesWindowProperties::StampZoneIndexProperty(window, zones));
             return window;
+        }
+
+        HWND CreateStampedWindow(const ZoneIndexSet& zones)
+        {
+            return CreateStampedWindow(zones, L"");
         }
 
         RECT WindowRect(HWND window)
@@ -906,6 +1202,12 @@ namespace FancyZonesUnitTests
         {
             const auto workArea = m_workAreaConfiguration.GetWorkArea(m_monitors[workAreaIndex]);
             return workArea->GetLayoutWindows().GetZoneIndexSetFromWindow(window);
+        }
+
+        ZoneIndexSet AppZoneHistoryZones(HWND window, size_t workAreaIndex)
+        {
+            const auto history = AppZoneHistory::instance().GetZoneHistory(get_process_path(window), m_workAreaIds[workAreaIndex]);
+            return history.has_value() ? history->zoneIndexSet : ZoneIndexSet{};
         }
 
         bool IsSnapped(HWND window, size_t workAreaIndex)
@@ -952,7 +1254,7 @@ namespace FancyZonesUnitTests
             const auto window = CreateStampedWindow(m_zones);
             SaveAppZoneHistory(window, 0, m_zones);
 
-            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } }, false);
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } }, true, false);
 
             Assert::IsTrue(m_zones == AssignedZones(window, 0));
             Assert::IsTrue(AssignedZones(window, 1).empty());
@@ -964,7 +1266,7 @@ namespace FancyZonesUnitTests
             const auto window = CreateStampedWindow(m_zones);
             SaveAppZoneHistory(window, 1, m_zones);
 
-            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } }, false);
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } }, true, false);
 
             Assert::IsTrue(AssignedZones(window, 0).empty());
             Assert::IsTrue(m_zones == AssignedZones(window, 1));
@@ -977,7 +1279,7 @@ namespace FancyZonesUnitTests
             SaveAppZoneHistory(window, 0, m_zones);
             SaveAppZoneHistory(window, 1, m_zones);
 
-            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } }, false);
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } }, true, false);
 
             Assert::IsTrue(m_zones == AssignedZones(window, 0));
             Assert::IsTrue(AssignedZones(window, 1).empty());
@@ -989,7 +1291,7 @@ namespace FancyZonesUnitTests
             SaveAppZoneHistory(window, 0, m_zones);
             SaveAppZoneHistory(window, 1, m_zones);
 
-            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[1] } }, false);
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[1] } }, true, false);
 
             Assert::IsTrue(AssignedZones(window, 0).empty());
             Assert::IsTrue(m_zones == AssignedZones(window, 1));
@@ -999,11 +1301,14 @@ namespace FancyZonesUnitTests
         {
             const auto window = CreateStampedWindow(m_zones);
 
-            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } }, false);
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } }, true, false);
 
-            Assert::IsTrue(AssignedZones(window, 0).empty());
+            // the window is assigned by its zone index property on the monitor where it's placed
+            Assert::IsTrue(m_zones == AssignedZones(window, 0));
             Assert::IsTrue(AssignedZones(window, 1).empty());
             Assert::IsTrue(m_zones == FancyZonesWindowProperties::RetrieveZoneIndexProperty(window));
+            Assert::IsTrue(AppZoneHistory::instance().GetFullAppZoneHistory().empty());
+            Assert::IsFalse(IsSnapped(window, 0));
         }
 
         TEST_METHOD (UpdateStampedWindowsOtherZonesInAppZoneHistory)
@@ -1012,10 +1317,11 @@ namespace FancyZonesUnitTests
             const auto window = CreateStampedWindow(m_zones);
             SaveAppZoneHistory(window, 0, appZoneHistoryZones);
 
-            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } }, false);
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } }, true, false);
 
-            Assert::IsTrue(AssignedZones(window, 0).empty());
+            Assert::IsTrue(m_zones == AssignedZones(window, 0));
             Assert::IsTrue(AssignedZones(window, 1).empty());
+            Assert::IsTrue(appZoneHistoryZones == AppZoneHistoryZones(window, 0));
         }
 
         TEST_METHOD (UpdateStampedWindowsAppZoneHistoryForMissingZoneOnFirst)
@@ -1030,7 +1336,7 @@ namespace FancyZonesUnitTests
             m_workAreaConfiguration.GetWorkArea(m_monitors[0])->InitLayout();
             Assert::AreEqual(static_cast<size_t>(2), m_workAreaConfiguration.GetWorkArea(m_monitors[0])->GetLayout()->Zones().size());
 
-            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = zones, .monitor = Mocks::Monitor() } }, false);
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = zones, .monitor = Mocks::Monitor() } }, true, false);
 
             Assert::IsTrue(AssignedZones(window, 0).empty());
             Assert::IsTrue(zones == AssignedZones(window, 1));
@@ -1048,7 +1354,7 @@ namespace FancyZonesUnitTests
             m_workAreaConfiguration.GetWorkArea(m_monitors[1])->InitLayout();
             Assert::AreEqual(static_cast<size_t>(2), m_workAreaConfiguration.GetWorkArea(m_monitors[1])->GetLayout()->Zones().size());
 
-            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = zones, .monitor = Mocks::Monitor() } }, false);
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = zones, .monitor = Mocks::Monitor() } }, true, false);
 
             Assert::IsTrue(zones == AssignedZones(window, 0));
             Assert::IsTrue(AssignedZones(window, 1).empty());
@@ -1060,7 +1366,7 @@ namespace FancyZonesUnitTests
             SaveAppZoneHistory(window, 0, m_zones);
             SaveAppZoneHistory(window, 1, m_zones);
 
-            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = Mocks::Monitor() } }, false);
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = Mocks::Monitor() } }, true, false);
 
             // the window is snapped on one work area only
             Assert::IsTrue(AssignedZones(window, 0).empty() != AssignedZones(window, 1).empty());
@@ -1072,7 +1378,7 @@ namespace FancyZonesUnitTests
             Assert::IsTrue(m_workAreaConfiguration.GetWorkArea(m_monitors[0])->Snap(window, m_zones, false));
             SaveAppZoneHistory(window, 1, m_zones);
 
-            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[1] } }, false);
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[1] } }, true, false);
 
             Assert::IsTrue(m_zones == AssignedZones(window, 0));
             Assert::IsTrue(AssignedZones(window, 1).empty());
@@ -1091,7 +1397,7 @@ namespace FancyZonesUnitTests
 
             const std::vector<StampedWindow> windows = { StampedWindow{ .window = window1, .zones = m_zones, .monitor = m_monitors[0] },
                                                          StampedWindow{ .window = window2, .zones = m_zones, .monitor = m_monitors[0] } };
-            m_workAreaConfiguration.UpdateStampedWindows(windows, false);
+            m_workAreaConfiguration.UpdateStampedWindows(windows, true, false);
 
             // snapping the window again would move it to the end of its zone
             Assert::IsTrue(sortKey == FancyZonesWindowProperties::GetTabSortKeyWithinZone(window1));
@@ -1102,7 +1408,7 @@ namespace FancyZonesUnitTests
             const auto window = CreateStampedWindow(m_zones);
             SaveAppZoneHistory(window, 1, m_zones);
 
-            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = nullptr } }, false);
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = nullptr } }, true, false);
 
             Assert::IsTrue(AssignedZones(window, 0).empty());
             Assert::IsTrue(m_zones == AssignedZones(window, 1));
@@ -1121,35 +1427,309 @@ namespace FancyZonesUnitTests
             const std::vector<StampedWindow> windows = { StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } };
 
             // the window is snapped without app zone history
-            workAreaConfiguration.UpdateStampedWindows(windows, false);
+            workAreaConfiguration.UpdateStampedWindows(windows, true, false);
 
             Assert::IsTrue(m_zones == workAreaConfiguration.GetWorkArea(nullptr)->GetLayoutWindows().GetZoneIndexSetFromWindow(window));
             Assert::IsTrue(AppZoneHistory::instance().GetZoneHistory(get_process_path(window), workAreaId).has_value());
 
             // the window is snapped again when it's snapped already
             AppZoneHistory::instance().SetAppZoneHistory({});
-            workAreaConfiguration.UpdateStampedWindows(windows, false);
+            workAreaConfiguration.UpdateStampedWindows(windows, true, false);
 
             Assert::IsTrue(AppZoneHistory::instance().GetZoneHistory(get_process_path(window), workAreaId).has_value());
         }
 
         TEST_METHOD (UpdateStampedWindowsUpdatePositions)
         {
+            // one window is snapped by the app zone history, the other one is assigned by its zone index property
+            const ZoneIndexSet stampedZones = { 2 };
+            const auto snappedWindow = CreateStampedWindow(m_zones);
+            const auto stampedWindow = CreateStampedWindow(stampedZones);
+            SaveAppZoneHistory(snappedWindow, 0, m_zones);
+            const std::vector<StampedWindow> windows = { StampedWindow{ .window = snappedWindow, .zones = m_zones, .monitor = m_monitors[0] },
+                                                         StampedWindow{ .window = stampedWindow, .zones = stampedZones, .monitor = m_monitors[0] } };
+
+            RECT snappedWindowRect{};
+            GetWindowRect(snappedWindow, &snappedWindowRect);
+            RECT stampedWindowRect{};
+            GetWindowRect(stampedWindow, &stampedWindowRect);
+
+            m_workAreaConfiguration.UpdateStampedWindows(windows, true, false);
+
+            Assert::IsTrue(m_zones == AssignedZones(snappedWindow, 0));
+            Assert::IsTrue(stampedZones == AssignedZones(stampedWindow, 0));
+            CustomAssert::AreEqual(snappedWindowRect, WindowRect(snappedWindow));
+            CustomAssert::AreEqual(stampedWindowRect, WindowRect(stampedWindow));
+
+            m_workAreaConfiguration.UpdateStampedWindows(windows, true, true);
+
+            const auto& zones = m_workAreaConfiguration.GetWorkArea(m_monitors[0])->GetLayout()->Zones();
+            const auto snappedZoneRect = zones.at(1).GetZoneRect();
+            const auto stampedZoneRect = zones.at(2).GetZoneRect();
+            CustomAssert::AreEqual(snappedZoneRect, Helpers::WaitForWindowRect(snappedWindow, snappedZoneRect));
+            CustomAssert::AreEqual(stampedZoneRect, Helpers::WaitForWindowRect(stampedWindow, stampedZoneRect));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsSameAppDifferentZones)
+        {
+            const ZoneIndexSet zones1 = { 0 };
+            const ZoneIndexSet zones2 = { 1 };
+            const auto window1 = CreateStampedWindow(zones1);
+            const auto window2 = CreateStampedWindow(zones2);
+            SaveAppZoneHistory(window1, 0, zones1);
+
+            const std::vector<StampedWindow> windows = { StampedWindow{ .window = window1, .zones = zones1, .monitor = m_monitors[0] },
+                                                         StampedWindow{ .window = window2, .zones = zones2, .monitor = m_monitors[0] } };
+            m_workAreaConfiguration.UpdateStampedWindows(windows, true, false);
+
+            // the app zone history has the zones of one window of the app only, the other window keeps its own zones
+            Assert::IsTrue(zones1 == AssignedZones(window1, 0));
+            Assert::IsTrue(zones2 == AssignedZones(window2, 0));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsOtherWorkAreasNotChecked)
+        {
+            const auto window = CreateStampedWindow(m_zones);
+            SaveAppZoneHistory(window, 1, m_zones);
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } }, false, true);
+
+            // the window stays on the monitor where it's placed
+            Assert::IsTrue(m_zones == AssignedZones(window, 0));
+            Assert::IsTrue(AssignedZones(window, 1).empty());
+        }
+
+        TEST_METHOD (UpdateStampedWindowsAppZoneHistoryOnWindowMonitorOtherWorkAreasNotChecked)
+        {
             const auto window = CreateStampedWindow(m_zones);
             SaveAppZoneHistory(window, 0, m_zones);
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } }, false, true);
+
+            Assert::IsTrue(m_zones == AssignedZones(window, 0));
+            Assert::IsTrue(AssignedZones(window, 1).empty());
+            Assert::IsTrue(IsSnapped(window, 0));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsIncorrectZone)
+        {
+            const ZoneIndexSet zones = { 5 };
+            const auto window = CreateStampedWindow(zones);
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = zones, .monitor = m_monitors[0] } }, true, false);
+
+            Assert::IsTrue(AssignedZones(window, 0).empty());
+            Assert::IsTrue(AssignedZones(window, 1).empty());
+        }
+
+        TEST_METHOD (UpdateStampedWindowsMonitorWithoutWorkArea)
+        {
+            const auto window = CreateStampedWindow(m_zones);
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = Mocks::Monitor() } }, true, false);
+
+            Assert::IsTrue(AssignedZones(window, 0).empty());
+            Assert::IsTrue(AssignedZones(window, 1).empty());
+        }
+
+        TEST_METHOD (UpdateStampedWindowsNearestMonitor)
+        {
+            const auto window = CreateStampedWindow(m_zones);
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = nullptr, .nearestMonitor = m_monitors[1] } }, true, false);
+
+            Assert::IsTrue(AssignedZones(window, 0).empty());
+            Assert::IsTrue(m_zones == AssignedZones(window, 1));
+            Assert::IsTrue(AppZoneHistory::instance().GetFullAppZoneHistory().empty());
+        }
+
+        TEST_METHOD (UpdateStampedWindowsExcludedApp)
+        {
+            // case-sensitive, should be uppercase
+            FancyZonesSettings::instance().SetSettings(Settings{ .excludedAppsArray = { L"STAMPED_WINDOW_EXCLUDED" } });
+
+            // exclude by window title
+            const auto window = CreateStampedWindow(m_zones, L"Stamped_Window_Excluded");
             const std::vector<StampedWindow> windows = { StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[0] } };
+
+            m_workAreaConfiguration.UpdateStampedWindows(windows, true, false);
+
+            Assert::IsTrue(AssignedZones(window, 0).empty());
+            Assert::IsTrue(AssignedZones(window, 1).empty());
+
+            // the window is snapped when the app zone history has the same zones, as a window of any other app
+            SaveAppZoneHistory(window, 0, m_zones);
+            m_workAreaConfiguration.UpdateStampedWindows(windows, true, false);
+
+            Assert::IsTrue(m_zones == AssignedZones(window, 0));
+            Assert::IsTrue(IsSnapped(window, 0));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsWindowPlacedOnOtherMonitor)
+        {
+            const auto window = CreateStampedWindow(m_zones);
+            Assert::IsTrue(m_workAreaConfiguration.GetWorkArea(m_monitors[0])->AssignStampedWindow(window, m_zones));
+            Assert::IsTrue(m_zones == AssignedZones(window, 0));
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[1] } }, true, false);
+
+            Assert::IsTrue(AssignedZones(window, 0).empty());
+            Assert::IsTrue(m_zones == AssignedZones(window, 1));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsKeepsStampedWindowOutsideOfMonitors)
+        {
+            const auto window = CreateStampedWindow(m_zones);
+            Assert::IsTrue(m_workAreaConfiguration.GetWorkArea(m_monitors[0])->AssignStampedWindow(window, m_zones));
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = nullptr, .nearestMonitor = m_monitors[1] } }, true, false);
+
+            // a window that isn't placed on any monitor stays on the work area that keeps it
+            Assert::IsTrue(m_zones == AssignedZones(window, 0));
+            Assert::IsTrue(AssignedZones(window, 1).empty());
+        }
+
+        TEST_METHOD (UpdateStampedWindowsKeepsOrderOfStampedWindows)
+        {
+            const auto window1 = CreateStampedWindow(m_zones);
+            const auto window2 = CreateStampedWindow(m_zones);
+            const StampedWindow stampedWindow1{ .window = window1, .zones = m_zones, .monitor = m_monitors[0] };
+            const StampedWindow stampedWindow2{ .window = window2, .zones = m_zones, .monitor = m_monitors[0] };
+
+            m_workAreaConfiguration.UpdateStampedWindows({ stampedWindow1, stampedWindow2 }, true, false);
+
+            const auto sortKey = FancyZonesWindowProperties::GetTabSortKeyWithinZone(window1);
+            Assert::IsTrue(sortKey.has_value());
+
+            // the windows come in another order, assigning the window again would move it to the end of its zone
+            m_workAreaConfiguration.UpdateStampedWindows({ stampedWindow2, stampedWindow1 }, true, false);
+
+            Assert::IsTrue(sortKey == FancyZonesWindowProperties::GetTabSortKeyWithinZone(window1));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsKeepsOrderOfWindowSnappedOnOtherWorkArea)
+        {
+            const auto window = CreateStampedWindow(m_zones);
+            Assert::IsTrue(m_workAreaConfiguration.GetWorkArea(m_monitors[0])->AssignStampedWindow(window, m_zones));
+
+            // the window leaves the first work area and is snapped on the second one
+            Assert::IsTrue(m_workAreaConfiguration.GetWorkArea(m_monitors[0])->Unsnap(window));
+            Assert::IsTrue(m_workAreaConfiguration.GetWorkArea(m_monitors[1])->Snap(window, m_zones, false));
+
+            const auto sortKey = FancyZonesWindowProperties::GetTabSortKeyWithinZone(window);
+            Assert::IsTrue(sortKey.has_value());
+
+            m_workAreaConfiguration.UpdateStampedWindows({ StampedWindow{ .window = window, .zones = m_zones, .monitor = m_monitors[1] } }, true, false);
+
+            // the first work area doesn't keep the window anymore, releasing it there would remove its place in the zone
+            Assert::IsTrue(sortKey == FancyZonesWindowProperties::GetTabSortKeyWithinZone(window));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsTwice)
+        {
+            // one window is snapped by the app zone history, the other one is assigned by its zone index property
+            const ZoneIndexSet snappedZones = { 0 };
+            const ZoneIndexSet stampedZones = { 1 };
+            const auto snappedWindow = CreateStampedWindow(snappedZones);
+            const auto stampedWindow = CreateStampedWindow(stampedZones);
+            SaveAppZoneHistory(snappedWindow, 0, snappedZones);
+            const std::vector<StampedWindow> windows = { StampedWindow{ .window = snappedWindow, .zones = snappedZones, .monitor = m_monitors[0] },
+                                                         StampedWindow{ .window = stampedWindow, .zones = stampedZones, .monitor = m_monitors[0] } };
+
+            m_workAreaConfiguration.UpdateStampedWindows(windows, true, true);
+
+            const auto& zones = m_workAreaConfiguration.GetWorkArea(m_monitors[0])->GetLayout()->Zones();
+            const auto snappedZoneRect = zones.at(0).GetZoneRect();
+            const auto stampedZoneRect = zones.at(1).GetZoneRect();
+            CustomAssert::AreEqual(snappedZoneRect, Helpers::WaitForWindowRect(snappedWindow, snappedZoneRect));
+            CustomAssert::AreEqual(stampedZoneRect, Helpers::WaitForWindowRect(stampedWindow, stampedZoneRect));
+            Assert::IsTrue(snappedZones == AssignedZones(snappedWindow, 0));
+            Assert::IsTrue(stampedZones == AssignedZones(stampedWindow, 0));
+            Assert::IsTrue(m_workAreaConfiguration.GetWorkArea(m_monitors[1])->GetLayoutWindows().SnappedWindows().empty());
+            Assert::IsTrue(snappedZones == AppZoneHistoryZones(snappedWindow, 0));
+
+            m_workAreaConfiguration.UpdateStampedWindows(windows, true, true);
+
+            CustomAssert::AreEqual(snappedZoneRect, WindowRect(snappedWindow));
+            CustomAssert::AreEqual(stampedZoneRect, WindowRect(stampedWindow));
+            Assert::IsTrue(snappedZones == AssignedZones(snappedWindow, 0));
+            Assert::IsTrue(stampedZones == AssignedZones(stampedWindow, 0));
+            Assert::IsTrue(m_workAreaConfiguration.GetWorkArea(m_monitors[1])->GetLayoutWindows().SnappedWindows().empty());
+            Assert::IsTrue(snappedZones == AppZoneHistoryZones(snappedWindow, 0));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsLayoutWithoutZones)
+        {
+            const auto workArea = m_workAreaConfiguration.GetWorkArea(m_monitors[0]);
+            const ZoneIndexSet snappedZones = { 0 };
+            const ZoneIndexSet stampedZones = { 1 };
+            const auto snappedWindow = CreateStampedWindow(snappedZones);
+            const auto stampedWindow = CreateStampedWindow(stampedZones);
+            Assert::IsTrue(workArea->Snap(snappedWindow, snappedZones, false));
+            const std::vector<StampedWindow> windows = { StampedWindow{ .window = snappedWindow, .zones = snappedZones, .monitor = m_monitors[0] },
+                                                         StampedWindow{ .window = stampedWindow, .zones = stampedZones, .monitor = m_monitors[0] } };
+
+            RECT snappedWindowRect{};
+            GetWindowRect(snappedWindow, &snappedWindowRect);
+            RECT stampedWindowRect{};
+            GetWindowRect(stampedWindow, &stampedWindowRect);
+
+            ApplyBlankLayout(m_workAreaIds[0]);
+            workArea->InitLayout();
+            Assert::IsTrue(workArea->GetLayout()->Zones().empty());
+
+            m_workAreaConfiguration.UpdateStampedWindows(windows, false, true);
+
+            Assert::IsTrue(snappedZones == AssignedZones(snappedWindow, 0));
+            Assert::IsTrue(AssignedZones(stampedWindow, 0).empty());
+            Assert::IsTrue(AssignedZones(stampedWindow, 1).empty());
+            CustomAssert::AreEqual(snappedWindowRect, WindowRect(snappedWindow));
+            CustomAssert::AreEqual(stampedWindowRect, WindowRect(stampedWindow));
+
+            // the windows are placed by the next layout that has zones
+            ApplyGridLayout(m_workAreaIds[0], 4);
+            workArea->InitLayout();
+
+            m_workAreaConfiguration.UpdateStampedWindows(windows, false, true);
+
+            const auto snappedZoneRect = workArea->GetLayout()->Zones().at(0).GetZoneRect();
+            const auto stampedZoneRect = workArea->GetLayout()->Zones().at(1).GetZoneRect();
+            CustomAssert::AreEqual(snappedZoneRect, Helpers::WaitForWindowRect(snappedWindow, snappedZoneRect));
+            CustomAssert::AreEqual(stampedZoneRect, Helpers::WaitForWindowRect(stampedWindow, stampedZoneRect));
+        }
+
+        TEST_METHOD (UpdateStampedWindowsAssignsWindowAgainWhenLayoutHasZone)
+        {
+            const auto workArea = m_workAreaConfiguration.GetWorkArea(m_monitors[0]);
+            const ZoneIndexSet zones = { 3 };
+            const auto window = CreateStampedWindow(zones);
+            const std::vector<StampedWindow> windows = { StampedWindow{ .window = window, .zones = zones, .monitor = m_monitors[0] } };
 
             RECT rect{};
             GetWindowRect(window, &rect);
 
-            m_workAreaConfiguration.UpdateStampedWindows(windows, false);
+            m_workAreaConfiguration.UpdateStampedWindows(windows, false, false);
 
-            Assert::IsTrue(m_zones == AssignedZones(window, 0));
+            Assert::IsTrue(zones == AssignedZones(window, 0));
+
+            // the layout doesn't have the zone of the window anymore
+            ApplyGridLayout(m_workAreaIds[0], 2);
+            workArea->InitLayout();
+            Assert::AreEqual(static_cast<size_t>(2), workArea->GetLayout()->Zones().size());
+
+            m_workAreaConfiguration.UpdateStampedWindows(windows, false, true);
+
+            Assert::IsTrue(AssignedZones(window, 0).empty());
             CustomAssert::AreEqual(rect, WindowRect(window));
 
-            m_workAreaConfiguration.UpdateStampedWindows(windows, true);
+            // the layout has the zone again
+            ApplyGridLayout(m_workAreaIds[0], 4);
+            workArea->InitLayout();
 
-            const auto zoneRect = m_workAreaConfiguration.GetWorkArea(m_monitors[0])->GetLayout()->Zones().at(1).GetZoneRect();
+            m_workAreaConfiguration.UpdateStampedWindows(windows, false, true);
+
+            const auto zoneRect = workArea->GetLayout()->Zones().at(3).GetZoneRect();
+            Assert::IsTrue(zones == AssignedZones(window, 0));
             CustomAssert::AreEqual(zoneRect, Helpers::WaitForWindowRect(window, zoneRect));
         }
     };

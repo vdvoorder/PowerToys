@@ -340,6 +340,7 @@ protected:
 
 private:
     void UpdateWorkAreas(bool updateWindowPositions) noexcept;
+    std::vector<StampedWindow> GetStampedWindows() const noexcept;
     bool ShouldWorkAreasBeRecreated(const std::vector<FancyZonesDataTypes::MonitorId>& monitors, const GUID& virtualDesktop, const std::unordered_map<HMONITOR, std::unique_ptr<WorkArea>>& workAreas) noexcept;
     void CycleWindows(bool reverse) noexcept;
     void RotateWindowsAcrossMonitors(bool reverse) noexcept;
@@ -1245,6 +1246,11 @@ void FancyZones::UpdateWorkAreas(bool updateWindowPositions) noexcept
     }
 
     // init previously snapped windows
+    m_workAreaConfiguration.UpdateStampedWindows(GetStampedWindows(), true, updateWindowPositions);
+}
+
+std::vector<StampedWindow> FancyZones::GetStampedWindows() const noexcept
+{
     std::vector<StampedWindow> stampedWindows{};
     for (const auto& window : VirtualDesktop::instance().GetWindowsFromCurrentDesktop())
     {
@@ -1254,10 +1260,12 @@ void FancyZones::UpdateWorkAreas(bool updateWindowPositions) noexcept
             continue;
         }
 
-        stampedWindows.push_back({ .window = window, .zones = indexes, .monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONULL) });
+        const auto monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONULL);
+        const auto nearestMonitor = monitor ? nullptr : MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        stampedWindows.push_back({ .window = window, .zones = indexes, .monitor = monitor, .nearestMonitor = nearestMonitor });
     }
 
-    m_workAreaConfiguration.UpdateStampedWindows(stampedWindows, updateWindowPositions);
+    return stampedWindows;
 }
 
 bool FancyZones::ShouldWorkAreasBeRecreated(const std::vector<FancyZonesDataTypes::MonitorId>& monitors, const GUID& virtualDesktop, const std::unordered_map<HMONITOR, std::unique_ptr<WorkArea>>& workAreas) noexcept
@@ -1587,12 +1595,13 @@ void FancyZones::RefreshLayouts() noexcept
         if (workArea)
         {
             workArea->InitLayout();
-
-            if (FancyZonesSettings::settings().zoneSetChange_moveWindows)
-            {
-                workArea->UpdateWindowPositions();
-            }
         }
+    }
+
+    if (FancyZonesSettings::settings().zoneSetChange_moveWindows)
+    {
+        // a layout change doesn't move windows to other monitors
+        m_workAreaConfiguration.UpdateStampedWindows(GetStampedWindows(), false, true);
     }
 }
 

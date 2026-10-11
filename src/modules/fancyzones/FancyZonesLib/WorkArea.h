@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <unordered_set>
 #include <vector>
 
 #include <FancyZonesLib/Layout.h>
@@ -52,6 +53,8 @@ public:
 
     bool Snap(HWND window, const ZoneIndexSet& zones, bool updatePosition = true);
     bool Unsnap(HWND window);
+    bool AssignStampedWindow(HWND window, const ZoneIndexSet& stampedZones);
+    void DismissStampedWindow(HWND window);
 
     void ShowZones(const ZoneIndexSet& highlight, HWND draggedWindow = nullptr);
     void HideZones();
@@ -73,6 +76,7 @@ private:
 
     bool AreZonesInLayout(const ZoneIndexSet& zones) const noexcept;
     void MoveWindowToZones(HWND window, const ZoneIndexSet& zones, bool waitIfMinimized);
+    void DismissWindow(HWND window);
 
     LRESULT WndProc(UINT message, WPARAM wparam, LPARAM lparam) noexcept;
     
@@ -81,5 +85,6 @@ private:
     HWND m_window{}; // Hidden tool window used to represent current monitor desktop work area.
     std::unique_ptr<Layout> m_layout;
     LayoutAssignedWindows m_layoutWindows{};
+    std::unordered_set<HWND> m_windowsAssignedByStamp{}; // Windows assigned by their zone index property, without app zone history.
     std::unique_ptr<ZonesOverlay> m_zonesOverlay;
 };

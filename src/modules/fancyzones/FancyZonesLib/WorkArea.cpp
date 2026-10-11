@@ -132,6 +132,7 @@ bool WorkArea::Snap(HWND window, const ZoneIndexSet& zones, bool updatePosition)
     }
 
     m_layoutWindows.Assign(window, zones);
+    m_windowsAssignedByStamp.erase(window);
     AppZoneHistory::instance().SetAppLastZones(window, m_uniqueId, m_layout->Id(), zones);
 
     if (updatePosition)
@@ -163,11 +164,43 @@ bool WorkArea::Unsnap(HWND window)
         return false;
     }
     
-    m_layoutWindows.Dismiss(window);
+    DismissWindow(window);
     AppZoneHistory::instance().RemoveAppLastZone(window, m_uniqueId, m_layout->Id());
     FancyZonesWindowProperties::RemoveZoneIndexProperty(window);
 
     return true;
+}
+
+bool WorkArea::AssignStampedWindow(HWND window, const ZoneIndexSet& stampedZones)
+{
+    // zone numbers that were assigned on another monitor mean other places here
+    if (FancyZonesWindowProperties::IsZoneIndexPropertyFromAnotherMonitor(window, m_uniqueId.monitorId) || !AreZonesInLayout(stampedZones))
+    {
+        return false;
+    }
+
+    // assigning the same zones again would only move the window to the end of the window switching order
+    if (m_layoutWindows.GetZoneIndexSetFromWindow(window) != stampedZones)
+    {
+        m_layoutWindows.Assign(window, stampedZones);
+    }
+
+    if (m_windowsAssignedByStamp.insert(window).second)
+    {
+        Logger::info(L"Window {} is assigned by its zone index property on work area {}", static_cast<void*>(window), m_uniqueId.toString());
+    }
+
+    return true;
+}
+
+void WorkArea::DismissStampedWindow(HWND window)
+{
+    // LayoutAssignedWindows::Dismiss removes the sort key of the window also when this list doesn't have the window,
+    // and the window can be in the list of another work area then
+    if (m_windowsAssignedByStamp.erase(window) > 0 && !m_layoutWindows.GetZoneIndexSetFromWindow(window).empty())
+    {
+        m_layoutWindows.Dismiss(window);
+    }
 }
 
 const GUID WorkArea::GetLayoutId() const noexcept
@@ -261,21 +294,43 @@ void WorkArea::InitLayout()
 
 void WorkArea::UpdateWindowPositions()
 {
+    if (!m_layout || m_layout->Zones().empty())
+    {
+        // nothing can be placed without zones, the windows stay assigned for the next layout
+        return;
+    }
+
     const auto& snappedWindows = m_layoutWindows.SnappedWindows();
     for (const auto& [window, zones] : snappedWindows)
     {
         if (!IsWindow(window))
         {
             // The window was closed. Its app zone history is kept for the next window of the app.
-            m_layoutWindows.Dismiss(window);
+            DismissWindow(window);
             continue;
         }
 
-        if (AreZonesInLayout(zones))
+        if (!m_windowsAssignedByStamp.contains(window))
         {
-            // a minimized window stays minimized and gets its new position without the wait
-            Snap(window, zones, false);
-            MoveWindowToZones(window, zones, false);
+            if (AreZonesInLayout(zones))
+            {
+                // a minimized window stays minimized and gets its new position without the wait
+                Snap(window, zones, false);
+                MoveWindowToZones(window, zones, false);
+            }
+
+            continue;
+        }
+
+        // the zone index property and the app zone history of these windows stay as they are
+        if (AssignStampedWindow(window, FancyZonesWindowProperties::RetrieveZoneIndexProperty(window)))
+        {
+            MoveWindowToZones(window, m_layoutWindows.GetZoneIndexSetFromWindow(window), false);
+        }
+        else
+        {
+            // the window lost the zone index property or the layout doesn't have its zones anymore
+            DismissWindow(window);
         }
     }
 }
@@ -446,6 +501,12 @@ void WorkArea::MoveWindowToZones(HWND window, const ZoneIndexSet& zones, bool wa
     FancyZonesWindowUtils::SaveWindowSizeAndOrigin(window);
     const auto ifMinimized = waitIfMinimized ? FancyZonesWindowUtils::IfMinimized::Wait : FancyZonesWindowUtils::IfMinimized::DoNotWait;
     FancyZonesWindowUtils::SizeWindowToRect(window, adjustedRect, true, ifMinimized);
+}
+
+void WorkArea::DismissWindow(HWND window)
+{
+    m_layoutWindows.Dismiss(window);
+    m_windowsAssignedByStamp.erase(window);
 }
 
 #pragma endregion
