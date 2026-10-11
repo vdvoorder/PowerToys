@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "WorkAreaConfiguration.h"
 
+#include <FancyZonesLib/FancyZonesData/AppZoneHistory.h>
 #include <FancyZonesLib/WorkArea.h>
 
 WorkArea* const WorkAreaConfiguration::GetWorkArea(HMONITOR monitor) const
@@ -59,6 +60,59 @@ const std::unordered_map<HMONITOR, std::unique_ptr<WorkArea>>& WorkAreaConfigura
 void WorkAreaConfiguration::AddWorkArea(HMONITOR monitor, std::unique_ptr<WorkArea> workArea)
 {
     m_workAreaMap.insert({ monitor, std::move(workArea) });
+}
+
+void WorkAreaConfiguration::UpdateStampedWindows(const std::vector<StampedWindow>& windows, bool updatePositions)
+{
+    const auto allMonitorsWorkArea = GetWorkArea(nullptr);
+    if (allMonitorsWorkArea) // one work area across monitors
+    {
+        for (const auto& stampedWindow : windows)
+        {
+            allMonitorsWorkArea->Snap(stampedWindow.window, stampedWindow.zones, false);
+        }
+    }
+    else
+    {
+        // first, snap windows to the monitor where they're placed
+        std::vector<StampedWindow> windowsToSnap{};
+        for (const auto& stampedWindow : windows)
+        {
+            const auto workAreaForMonitor = GetWorkArea(stampedWindow.monitor);
+            if (workAreaForMonitor && AppZoneHistory::instance().GetAppLastZoneIndexSet(stampedWindow.window, workAreaForMonitor->UniqueId(), workAreaForMonitor->GetLayoutId()) == stampedWindow.zones)
+            {
+                workAreaForMonitor->Snap(stampedWindow.window, stampedWindow.zones, false);
+            }
+            else
+            {
+                windowsToSnap.push_back(stampedWindow);
+            }
+        }
+
+        // snap rest of the windows to other work areas (in case they were moved after the monitor unplug)
+        for (const auto& stampedWindow : windowsToSnap)
+        {
+            for (const auto& [_, workArea] : m_workAreaMap)
+            {
+                const auto savedIndexes = AppZoneHistory::instance().GetAppLastZoneIndexSet(stampedWindow.window, workArea->UniqueId(), workArea->GetLayoutId());
+                if (savedIndexes == stampedWindow.zones)
+                {
+                    workArea->Snap(stampedWindow.window, stampedWindow.zones, false);
+                }
+            }
+        }
+    }
+
+    if (updatePositions)
+    {
+        for (const auto& [_, workArea] : m_workAreaMap)
+        {
+            if (workArea)
+            {
+                workArea->UpdateWindowPositions();
+            }
+        }
+    }
 }
 
 void WorkAreaConfiguration::Clear() noexcept

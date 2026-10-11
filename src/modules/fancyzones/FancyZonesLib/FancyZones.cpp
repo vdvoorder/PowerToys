@@ -1245,7 +1245,7 @@ void FancyZones::UpdateWorkAreas(bool updateWindowPositions) noexcept
     }
 
     // init previously snapped windows
-    std::unordered_map<HWND, ZoneIndexSet> windowsToSnap{};
+    std::vector<StampedWindow> stampedWindows{};
     for (const auto& window : VirtualDesktop::instance().GetWindowsFromCurrentDesktop())
     {
         auto indexes = FancyZonesWindowProperties::RetrieveZoneIndexProperty(window);
@@ -1254,64 +1254,10 @@ void FancyZones::UpdateWorkAreas(bool updateWindowPositions) noexcept
             continue;
         }
 
-        windowsToSnap.insert({ window, indexes });
+        stampedWindows.push_back({ .window = window, .zones = indexes, .monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONULL) });
     }
 
-    if (FancyZonesSettings::settings().spanZonesAcrossMonitors) // one work area across monitors
-    {
-        const auto workArea = m_workAreaConfiguration.GetWorkArea(nullptr);
-        if (workArea)
-        {
-            for (const auto& [window, zones] : windowsToSnap)
-            {
-                workArea->Snap(window, zones, false);
-            }
-        }
-    }
-    else
-    {
-        // first, snap windows to the monitor where they're placed
-        for (auto iter = windowsToSnap.begin(); iter != windowsToSnap.end();)
-        {
-            const auto window = iter->first;
-            const auto zones = iter->second;
-            const auto monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONULL);
-            const auto workAreaForMonitor = m_workAreaConfiguration.GetWorkArea(monitor);
-            if (workAreaForMonitor && AppZoneHistory::instance().GetAppLastZoneIndexSet(window, workAreaForMonitor->UniqueId(), workAreaForMonitor->GetLayoutId()) == zones)
-            {
-                workAreaForMonitor->Snap(window, zones, false);
-                iter = windowsToSnap.erase(iter);
-            }
-            else
-            {
-                ++iter;
-            }
-        }
-
-        // snap rest of the windows to other work areas (in case they were moved after the monitor unplug)
-        for (const auto& [window, zones] : windowsToSnap)
-        {
-            for (const auto& [_, workArea] : m_workAreaConfiguration.GetAllWorkAreas())
-            {
-                const auto savedIndexes = AppZoneHistory::instance().GetAppLastZoneIndexSet(window, workArea->UniqueId(), workArea->GetLayoutId());
-                if (savedIndexes == zones)
-                {
-                    workArea->Snap(window, zones, false);
-                }
-            }
-        }
-    }
-
-    if (updateWindowPositions)
-    {
-        for (const auto& [_, workArea] : m_workAreaConfiguration.GetAllWorkAreas())
-        {
-            if (workArea)
-            {
-                workArea->UpdateWindowPositions();
-            }
-        }
-    }
+    m_workAreaConfiguration.UpdateStampedWindows(stampedWindows, updateWindowPositions);
 }
 
 bool FancyZones::ShouldWorkAreasBeRecreated(const std::vector<FancyZonesDataTypes::MonitorId>& monitors, const GUID& virtualDesktop, const std::unordered_map<HMONITOR, std::unique_ptr<WorkArea>>& workAreas) noexcept
