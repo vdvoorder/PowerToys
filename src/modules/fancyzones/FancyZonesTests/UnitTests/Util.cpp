@@ -44,6 +44,11 @@ namespace Mocks
     {
         return HwndCreator(title, className, exStyle, style, parentWindow)(hInst);
     }
+
+    void WindowClose(HWND window)
+    {
+        SendMessageTimeout(window, WM_CLOSE, 0, 0, SMTO_ABORTIFHUNG, 1000, nullptr);
+    }
 }
 
 LRESULT CALLBACK DLLWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -207,4 +212,21 @@ std::optional<GUID> Helpers::StringToGuid(const std::wstring& str)
     }
 
     return std::nullopt;
+}
+
+RECT Helpers::WaitForWindowRect(HWND window, const RECT& expected)
+{
+    RECT rect{};
+    for (int i = 0; i < 100; i++)
+    {
+        GetWindowRect(window, &rect);
+        if (EqualRect(&rect, &expected))
+        {
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    return rect;
 }

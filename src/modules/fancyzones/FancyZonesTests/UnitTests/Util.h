@@ -125,6 +125,9 @@ namespace Mocks
 
     HWND WindowCreate(HINSTANCE hInst, const std::wstring& title = L"", const std::wstring& className = L""
         , DWORD exStyle = 0, DWORD style = 0, HWND parentWindow = nullptr);
+
+    // Closes a window created by WindowCreate. A window can be destroyed only by its thread, which does it while handling WM_CLOSE.
+    void WindowClose(HWND window);
 }
 
 namespace Helpers
@@ -132,6 +135,9 @@ namespace Helpers
     std::wstring GuidToString(const GUID& guid);
     std::wstring CreateGuidString();
     std::optional<GUID> StringToGuid(const std::wstring& str);
+
+    // Waits until the window has the expected rect, one second at most. Returns the last rect of the window.
+    RECT WaitForWindowRect(HWND window, const RECT& expected);
 }
 
 template<>
