@@ -126,17 +126,9 @@ WorkArea::~WorkArea()
 
 bool WorkArea::Snap(HWND window, const ZoneIndexSet& zones, bool updatePosition)
 {
-    if (!m_layout || zones.empty())
+    if (!AreZonesInLayout(zones))
     {
         return false;
-    }
-
-    for (ZoneIndex zone : zones)
-    {
-        if (static_cast<size_t>(zone) >= m_layout->Zones().size())
-        {
-            return false;
-        }
     }
 
     m_layoutWindows.Assign(window, zones);
@@ -144,10 +136,7 @@ bool WorkArea::Snap(HWND window, const ZoneIndexSet& zones, bool updatePosition)
 
     if (updatePosition)
     {
-        const auto rect = m_layout->GetCombinedZonesRect(zones);
-        const auto adjustedRect = FancyZonesWindowUtils::AdjustRectForSizeWindowToRect(window, rect, m_window);
-        FancyZonesWindowUtils::SaveWindowSizeAndOrigin(window);
-        FancyZonesWindowUtils::SizeWindowToRect(window, adjustedRect);
+        MoveWindowToZones(window, zones);
     }
 
     return FancyZonesWindowProperties::StampZoneIndexProperty(window, zones);
@@ -411,6 +400,32 @@ void WorkArea::SetWorkAreaWindowAsTopmost(HWND draggedWindow) noexcept
 
     constexpr UINT flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE;
     SetWindowPos(m_window, windowInsertAfter, 0, 0, 0, 0, flags);
+}
+
+bool WorkArea::AreZonesInLayout(const ZoneIndexSet& zones) const noexcept
+{
+    if (!m_layout || zones.empty())
+    {
+        return false;
+    }
+
+    for (ZoneIndex zone : zones)
+    {
+        if (static_cast<size_t>(zone) >= m_layout->Zones().size())
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void WorkArea::MoveWindowToZones(HWND window, const ZoneIndexSet& zones)
+{
+    const auto rect = m_layout->GetCombinedZonesRect(zones);
+    const auto adjustedRect = FancyZonesWindowUtils::AdjustRectForSizeWindowToRect(window, rect, m_window);
+    FancyZonesWindowUtils::SaveWindowSizeAndOrigin(window);
+    FancyZonesWindowUtils::SizeWindowToRect(window, adjustedRect);
 }
 
 #pragma endregion

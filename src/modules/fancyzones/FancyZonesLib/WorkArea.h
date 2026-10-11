@@ -71,6 +71,9 @@ private:
     void CalculateZoneSet();
     void SetWorkAreaWindowAsTopmost(HWND draggedWindow) noexcept;
 
+    bool AreZonesInLayout(const ZoneIndexSet& zones) const noexcept;
+    void MoveWindowToZones(HWND window, const ZoneIndexSet& zones);
+
     LRESULT WndProc(UINT message, WPARAM wparam, LPARAM lparam) noexcept;
     
     const FancyZonesUtils::Rect m_workAreaRect{};
