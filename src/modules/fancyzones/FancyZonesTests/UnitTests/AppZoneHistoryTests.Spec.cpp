@@ -205,6 +205,61 @@ namespace FancyZonesUnitTests
             }
         }
 
+        TEST_METHOD (AppHistoryKeyIgnoresPackageVersion)
+        {
+            Assert::AreEqual(std::wstring(L"C:\\Program Files\\WindowsApps\\MSTeams_8wekyb3d8bbwe\\ms-teams.exe"),
+                             AppZoneHistory::AppHistoryKey(L"C:\\Program Files\\WindowsApps\\MSTeams_26260.1717.5229.7049_x64__8wekyb3d8bbwe\\ms-teams.exe"));
+            Assert::AreEqual(AppZoneHistory::AppHistoryKey(L"C:\\Program Files\\WindowsApps\\Microsoft.OutlookForWindows_1.2026.1001.200_x64__8wekyb3d8bbwe\\olk.exe"),
+                             AppZoneHistory::AppHistoryKey(L"C:\\Program Files\\WindowsApps\\Microsoft.OutlookForWindows_1.2026.1013.100_x64__8wekyb3d8bbwe\\olk.exe"));
+            Assert::AreEqual(std::wstring(L"C:\\Program Files\\PowerToys\\PowerToys.exe"),
+                             AppZoneHistory::AppHistoryKey(L"C:\\Program Files\\PowerToys\\PowerToys.exe"));
+        }
+
+        TEST_METHOD (AppZoneHistoryParseKeepsNewestPackageVersion)
+        {
+            const auto appWithZone = [](const std::wstring& appPath, int zone) {
+                json::JsonObject device{};
+                device.SetNamedValue(NonLocalizable::AppZoneHistoryIds::MonitorID, json::value(L"monitor-1"));
+                device.SetNamedValue(NonLocalizable::AppZoneHistoryIds::VirtualDesktopID, json::value(L"{72FA9FC0-26A6-4B37-A834-491C148DFC58}"));
+
+                json::JsonArray zones{};
+                zones.Append(json::value(zone));
+
+                json::JsonObject historyObj{};
+                historyObj.SetNamedValue(NonLocalizable::AppZoneHistoryIds::LayoutIdID, json::value(L"{61FA9FC0-26A6-4B37-A834-491C148DFC57}"));
+                historyObj.SetNamedValue(NonLocalizable::AppZoneHistoryIds::DeviceID, device);
+                historyObj.SetNamedValue(NonLocalizable::AppZoneHistoryIds::LayoutIndexesID, zones);
+
+                json::JsonArray history{};
+                history.Append(historyObj);
+
+                json::JsonObject obj{};
+                obj.SetNamedValue(NonLocalizable::AppZoneHistoryIds::AppPathID, json::value(appPath));
+                obj.SetNamedValue(NonLocalizable::AppZoneHistoryIds::HistoryID, history);
+                return obj;
+            };
+
+            json::JsonArray appZoneHistoryArray{};
+            appZoneHistoryArray.Append(appWithZone(L"C:\\Program Files\\WindowsApps\\Microsoft.OutlookForWindows_1.2026.929.200_x64__8wekyb3d8bbwe\\olk.exe", 0));
+            appZoneHistoryArray.Append(appWithZone(L"C:\\Program Files\\WindowsApps\\Microsoft.OutlookForWindows_1.2026.1001.200_x64__8wekyb3d8bbwe\\olk.exe", 1));
+            appZoneHistoryArray.Append(appWithZone(L"C:\\Program Files\\WindowsApps\\Microsoft.OutlookForWindows_1.2026.915.300_x64__8wekyb3d8bbwe\\olk.exe", 2));
+
+            json::JsonObject root{};
+            root.SetNamedValue(NonLocalizable::AppZoneHistoryIds::AppZoneHistoryID, appZoneHistoryArray);
+            json::to_file(AppZoneHistory::AppZoneHistoryFileName(), root);
+
+            AppZoneHistory::instance().LoadData();
+            Assert::AreEqual((size_t)1, AppZoneHistory::instance().GetFullAppZoneHistory().size());
+
+            FancyZonesDataTypes::WorkAreaId id{
+                .monitorId = { .deviceId = { .id = L"monitor-1" } },
+                .virtualDesktopId = FancyZonesUtils::GuidFromString(L"{72FA9FC0-26A6-4B37-A834-491C148DFC58}").value()
+            };
+            const auto history = AppZoneHistory::instance().GetZoneHistory(L"C:\\Program Files\\WindowsApps\\Microsoft.OutlookForWindows_1.2026.1013.100_x64__8wekyb3d8bbwe\\olk.exe", id);
+            Assert::IsTrue(history.has_value());
+            Assert::IsTrue(ZoneIndexSet{ 1 } == history->zoneIndexSet);
+        }
+
         TEST_METHOD (AppLastZoneInvalidWindow)
         {
             const auto layoutId = FancyZonesUtils::GuidFromString(L"{2FEC41DA-3A0B-4E31-9CE1-9473C65D99F2}").value();

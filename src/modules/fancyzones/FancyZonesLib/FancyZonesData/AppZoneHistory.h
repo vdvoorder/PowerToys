@@ -30,6 +30,7 @@ public:
     using TAppZoneHistoryMap = std::unordered_map<std::wstring, std::vector<FancyZonesDataTypes::AppZoneHistoryData>>;
 
     static AppZoneHistory& instance();
+    static std::wstring AppHistoryKey(const std::wstring& processPath);
 
     inline static std::wstring AppZoneHistoryFileName()
     {

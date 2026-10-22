@@ -12,6 +12,62 @@
 #include <FancyZonesLib/VirtualDesktop.h>
 #include <FancyZonesLib/util.h>
 
+#include <algorithm>
+#include <cwctype>
+#include <sstream>
+
+namespace
+{
+    struct PackagedAppPath
+    {
+        std::wstring key;
+        std::vector<int> version;
+    };
+
+    std::optional<PackagedAppPath> ParsePackagedAppPath(const std::wstring& processPath)
+    {
+        constexpr std::wstring_view packagesFolder = L"\\windowsapps\\";
+
+        std::wstring lowerPath = processPath;
+        std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), towlower);
+
+        const auto folderPos = lowerPath.find(packagesFolder);
+        if (folderPos == std::wstring::npos)
+        {
+            return std::nullopt;
+        }
+
+        const auto nameStart = folderPos + packagesFolder.size();
+        const auto nameEnd = processPath.find(L'\\', nameStart);
+        if (nameEnd == std::wstring::npos)
+        {
+            return std::nullopt;
+        }
+
+        std::vector<std::wstring> nameParts;
+        std::wstringstream fullName(processPath.substr(nameStart, nameEnd - nameStart));
+        for (std::wstring part; std::getline(fullName, part, L'_');)
+        {
+            nameParts.push_back(part);
+        }
+
+        if (nameParts.size() != 5)
+        {
+            return std::nullopt;
+        }
+
+        PackagedAppPath result{ .key = processPath.substr(0, nameStart) + nameParts[0] + L"_" + nameParts[4] + processPath.substr(nameEnd) };
+
+        std::wstringstream version(nameParts[1]);
+        for (std::wstring number; std::getline(version, number, L'.');)
+        {
+            result.version.push_back(_wtoi(number.c_str()));
+        }
+
+        return result;
+    }
+}
+
 namespace JsonUtils
 {
     struct AppZoneHistoryJSON
@@ -208,6 +264,7 @@ namespace JsonUtils
         try
         {
             AppZoneHistory::TAppZoneHistoryMap appZoneHistoryMap{};
+            std::unordered_map<std::wstring, std::vector<int>> packagedAppVersions{};
             auto appLastZones = fancyZonesDataJSON.GetNamedArray(NonLocalizable::AppZoneHistoryIds::AppZoneHistoryID);
 
             for (uint32_t i = 0; i < appLastZones.Size(); ++i)
@@ -215,7 +272,20 @@ namespace JsonUtils
                 json::JsonObject appLastZone = appLastZones.GetObjectAt(i);
                 if (auto appZoneHistory = AppZoneHistoryJSON::FromJson(appLastZone); appZoneHistory.has_value())
                 {
-                    appZoneHistoryMap[appZoneHistory->appPath] = std::move(appZoneHistory->data);
+                    const auto packagedAppPath = ParsePackagedAppPath(appZoneHistory->appPath);
+                    if (!packagedAppPath)
+                    {
+                        appZoneHistoryMap.try_emplace(appZoneHistory->appPath, std::move(appZoneHistory->data));
+                        continue;
+                    }
+
+                    if (appZoneHistoryMap.contains(packagedAppPath->key) && packagedAppVersions[packagedAppPath->key] >= packagedAppPath->version)
+                    {
+                        continue;
+                    }
+
+                    packagedAppVersions[packagedAppPath->key] = packagedAppPath->version;
+                    appZoneHistoryMap[packagedAppPath->key] = std::move(appZoneHistory->data);
                 }
             }
 
@@ -251,6 +321,12 @@ AppZoneHistory& AppZoneHistory::instance()
 {
     static AppZoneHistory self;
     return self;
+}
+
+std::wstring AppZoneHistory::AppHistoryKey(const std::wstring& processPath)
+{
+    const auto packagedAppPath = ParsePackagedAppPath(processPath);
+    return packagedAppPath ? packagedAppPath->key : processPath;
 }
 
 void AppZoneHistory::LoadData()
@@ -321,7 +397,7 @@ bool AppZoneHistory::SetAppLastZones(HWND window, const FancyZonesDataTypes::Wor
         return false;
     }
 
-    auto processPath = get_process_path_waiting_uwp(window);
+    auto processPath = AppHistoryKey(get_process_path_waiting_uwp(window));
     if (processPath.empty())
     {
         return false;
@@ -378,7 +454,7 @@ bool AppZoneHistory::SetAppLastZones(HWND window, const FancyZonesDataTypes::Wor
 
 bool AppZoneHistory::RemoveAppLastZone(HWND window, const FancyZonesDataTypes::WorkAreaId& workAreaId, const GUID& layoutId)
 {
-    auto processPath = get_process_path_waiting_uwp(window);
+    auto processPath = AppHistoryKey(get_process_path_waiting_uwp(window));
     if (processPath.empty())
     {
         return false;
@@ -441,7 +517,7 @@ bool AppZoneHistory::RemoveAppLastZone(HWND window, const FancyZonesDataTypes::W
 
 void AppZoneHistory::RemoveApp(const std::wstring& appPath)
 {
-    m_history.erase(appPath);
+    m_history.erase(AppHistoryKey(appPath));
 }
 
 const AppZoneHistory::TAppZoneHistoryMap& AppZoneHistory::GetFullAppZoneHistory() const noexcept
@@ -464,7 +540,7 @@ std::optional<FancyZonesDataTypes::AppZoneHistoryData> AppZoneHistory::GetZoneHi
         Logger::debug(L"Get {} zone history on monitor: {}, virtual desktop: {}", app, workAreaId.toString(), srcVirtualDesktopIDStr.value());
     }
 
-    auto iter = m_history.find(appPath);
+    auto iter = m_history.find(AppHistoryKey(appPath));
     if (iter == m_history.end())
     {
         Logger::info("App history not found");
@@ -494,7 +570,7 @@ std::optional<FancyZonesDataTypes::AppZoneHistoryData> AppZoneHistory::GetZoneHi
 
 bool AppZoneHistory::IsAnotherWindowOfApplicationInstanceZoned(HWND window, const FancyZonesDataTypes::WorkAreaId& workAreaId) const noexcept
 {
-    auto processPath = get_process_path_waiting_uwp(window);
+    auto processPath = AppHistoryKey(get_process_path_waiting_uwp(window));
     if (!processPath.empty())
     {
         auto history = m_history.find(processPath);
@@ -528,7 +604,7 @@ bool AppZoneHistory::IsAnotherWindowOfApplicationInstanceZoned(HWND window, cons
 
 ZoneIndexSet AppZoneHistory::GetAppLastZoneIndexSet(HWND window, const FancyZonesDataTypes::WorkAreaId& workAreaId, const GUID& layoutId) const
 {
-    auto processPath = get_process_path_waiting_uwp(window);
+    auto processPath = AppHistoryKey(get_process_path_waiting_uwp(window));
     if (processPath.empty())
     {
         Logger::error("Process path is empty");
