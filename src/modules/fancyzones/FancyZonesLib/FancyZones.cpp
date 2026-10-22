@@ -628,6 +628,11 @@ void FancyZones::WindowCreated(HWND window) noexcept
     const bool isZoned = !FancyZonesWindowProperties::RetrieveZoneIndexProperty(window).empty();
     if (isZoned)
     {
+        if (auto workArea = m_workAreaConfiguration.GetWorkAreaFromWindow(window))
+        {
+            workArea->RecheckWindowPosition(window);
+        }
+
         return;
     }
 

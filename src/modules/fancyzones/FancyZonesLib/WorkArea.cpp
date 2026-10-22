@@ -2,6 +2,7 @@
 #include "WorkArea.h"
 
 #include <common/logger/logger.h>
+#include <common/utils/process_path.h>
 
 #include "FancyZonesData/AppliedLayouts.h"
 #include "FancyZonesData/AppZoneHistory.h"
@@ -99,6 +100,12 @@ namespace
     };
 
     WindowPool windowPool;
+
+    constexpr UINT_PTR RecheckTimerId = 1;
+    constexpr UINT RecheckIntervalMillis = 500;
+    constexpr int RecheckTicks = 30;
+    constexpr int MaxCorrections = 2;
+    constexpr LONG MaxCorrectedOffset = 20;
 }
 
 WorkArea::WorkArea(HINSTANCE hinstance, const FancyZonesDataTypes::WorkAreaId& uniqueId, const FancyZonesUtils::Rect& workAreaRect) :
@@ -121,22 +128,15 @@ WorkArea::~WorkArea()
     // through m_renderTarget into an HWND that has already been recycled by a
     // subsequent NewZonesOverlayWindow call.
     m_zonesOverlay.reset();
+    KillTimer(m_window, RecheckTimerId);
     windowPool.FreeZonesOverlayWindow(m_window);
 }
 
 bool WorkArea::Snap(HWND window, const ZoneIndexSet& zones, bool updatePosition)
 {
-    if (!m_layout || zones.empty())
+    if (!AreZonesInLayout(zones))
     {
         return false;
-    }
-
-    for (ZoneIndex zone : zones)
-    {
-        if (static_cast<size_t>(zone) >= m_layout->Zones().size())
-        {
-            return false;
-        }
     }
 
     m_layoutWindows.Assign(window, zones);
@@ -144,10 +144,8 @@ bool WorkArea::Snap(HWND window, const ZoneIndexSet& zones, bool updatePosition)
 
     if (updatePosition)
     {
-        const auto rect = m_layout->GetCombinedZonesRect(zones);
-        const auto adjustedRect = FancyZonesWindowUtils::AdjustRectForSizeWindowToRect(window, rect, m_window);
-        FancyZonesWindowUtils::SaveWindowSizeAndOrigin(window);
-        FancyZonesWindowUtils::SizeWindowToRect(window, adjustedRect);
+        PlaceWindowInZones(window, zones);
+        RecheckWindowPosition(window);
     }
 
     return FancyZonesWindowProperties::StampZoneIndexProperty(window, zones);
@@ -165,6 +163,17 @@ bool WorkArea::Unsnap(HWND window)
     FancyZonesWindowProperties::RemoveZoneIndexProperty(window);
 
     return true;
+}
+
+void WorkArea::RecheckWindowPosition(HWND window)
+{
+    if (!m_window)
+    {
+        return;
+    }
+
+    m_windowsToRecheck[window] = {};
+    SetTimer(m_window, RecheckTimerId, RecheckIntervalMillis, nullptr);
 }
 
 const GUID WorkArea::GetLayoutId() const noexcept
@@ -385,6 +394,17 @@ LRESULT WorkArea::WndProc(UINT message, WPARAM wparam, LPARAM lparam) noexcept
     case WM_ERASEBKGND:
         return 1;
 
+    case WM_TIMER:
+    {
+        if (wparam != RecheckTimerId)
+        {
+            return DefWindowProc(m_window, message, wparam, lparam);
+        }
+
+        RecheckWindowPositions();
+    }
+    break;
+
     default:
     {
         return DefWindowProc(m_window, message, wparam, lparam);
@@ -404,6 +424,90 @@ void WorkArea::SetWorkAreaWindowAsTopmost(HWND draggedWindow) noexcept
 
     constexpr UINT flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE;
     SetWindowPos(m_window, windowInsertAfter, 0, 0, 0, 0, flags);
+}
+
+bool WorkArea::AreZonesInLayout(const ZoneIndexSet& zones) const noexcept
+{
+    if (!m_layout || zones.empty())
+    {
+        return false;
+    }
+
+    for (ZoneIndex zone : zones)
+    {
+        if (static_cast<size_t>(zone) >= m_layout->Zones().size())
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void WorkArea::PlaceWindowInZones(HWND window, const ZoneIndexSet& zones)
+{
+    const auto rect = m_layout->GetCombinedZonesRect(zones);
+    const auto adjustedRect = FancyZonesWindowUtils::AdjustRectForSizeWindowToRect(window, rect, m_window);
+    FancyZonesWindowUtils::SaveWindowSizeAndOrigin(window);
+    FancyZonesWindowUtils::SizeWindowToRect(window, adjustedRect);
+}
+
+void WorkArea::RecheckWindowPositions()
+{
+    for (auto iter = m_windowsToRecheck.begin(); iter != m_windowsToRecheck.end();)
+    {
+        const HWND window = iter->first;
+        auto& recheck = iter->second;
+        const auto zones = m_layoutWindows.GetZoneIndexSetFromWindow(window);
+        if (++recheck.ticks > RecheckTicks || !IsWindow(window) || !AreZonesInLayout(zones) ||
+            (::GetWindowLong(window, GWL_STYLE) & WS_SIZEBOX) == 0)
+        {
+            iter = m_windowsToRecheck.erase(iter);
+            continue;
+        }
+
+        if (IsWindowVisible(window) && !IsIconic(window) && !IsZoomed(window))
+        {
+            const auto offset = FrameOffsetFromZones(window, zones);
+            if (offset > MaxCorrectedOffset || (offset > 0 && recheck.corrections >= MaxCorrections))
+            {
+                iter = m_windowsToRecheck.erase(iter);
+                continue;
+            }
+
+            if (offset > 0)
+            {
+                recheck.corrections++;
+                const auto processPath = get_process_path(window);
+                Logger::info(L"{} window frame is {} px off its zones, placing it again", processPath.substr(processPath.find_last_of(L'\\') + 1), offset);
+                PlaceWindowInZones(window, zones);
+            }
+        }
+
+        ++iter;
+    }
+
+    if (m_windowsToRecheck.empty())
+    {
+        KillTimer(m_window, RecheckTimerId);
+    }
+}
+
+LONG WorkArea::FrameOffsetFromZones(HWND window, const ZoneIndexSet& zones) const
+{
+    RECT zonesRect = m_layout->GetCombinedZonesRect(zones);
+    MapWindowRect(m_window, nullptr, &zonesRect);
+
+    RECT frameRect{};
+    if (FAILED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS, &frameRect, sizeof(frameRect))))
+    {
+        return 0;
+    }
+
+    return (std::max)({ std::abs(frameRect.left - zonesRect.left),
+                        std::abs(frameRect.top - zonesRect.top),
+                        std::abs(frameRect.right - zonesRect.right),
+                        std::abs(frameRect.bottom - zonesRect.bottom) });
 }
 
 #pragma endregion
